@@ -8,9 +8,8 @@ from pathlib import Path
 
 import typer
 
-from supplygraph import graph, quality, warehouse
+from supplygraph import pipeline, quality
 from supplygraph.config import load_settings
-from supplygraph.ingest import gleif, opensanctions
 
 app = typer.Typer(help="SupplyGraph: supplier risk knowledge graph pipeline.", no_args_is_help=True)
 
@@ -39,10 +38,7 @@ def ingest_gleif(
 ) -> None:
     """Fetch seed companies and their ownership network from GLEIF."""
     settings = load_settings()
-    leis = gleif.read_seed_leis(seeds)[:max_seeds]
-    with gleif.GleifClient(settings.gleif_base_url, settings.user_agent) as client:
-        result = gleif.crawl(client, leis, children_limit=children)
-    gleif.write_crawl(result, settings.gleif_dir)
+    result = pipeline.ingest_gleif(settings, seeds, children, max_seeds)
     typer.echo(f"GLEIF: {len(result.records)} entities, {len(result.relationships)} ownership "
                f"links -> {settings.gleif_dir}")
     if result.missing_seeds:
@@ -52,29 +48,20 @@ def ingest_gleif(
 @app.command("ingest-sanctions")
 def ingest_sanctions() -> None:
     """Download the OpenSanctions consolidated sanctions list."""
-    settings = load_settings()
-    path = opensanctions.download(
-        settings.opensanctions_url, settings.sanctions_csv, settings.user_agent
-    )
-    typer.echo(f"OpenSanctions -> {path}")
+    typer.echo(f"OpenSanctions -> {pipeline.ingest_sanctions(load_settings())}")
 
 
 @app.command()
 def build() -> None:
     """Build warehouse tables from raw files and link companies to sanctions."""
-    settings = load_settings()
-    with warehouse.connect(settings.warehouse_path) as con:
-        counts = warehouse.build_all(con, settings.gleif_dir, settings.sanctions_csv)
-    for table, n in counts.items():
+    for table, n in pipeline.build(load_settings()).items():
         typer.echo(f"{table:<26}{n:>8}")
 
 
 @app.command()
 def check() -> None:
     """Run data quality checks. Exits with code 1 if any error-level check fails."""
-    settings = load_settings()
-    with warehouse.connect(settings.warehouse_path) as con:
-        results = quality.run_checks(con)
+    results = pipeline.check(load_settings())
     for r in results:
         marker = {"pass": "PASS", "fail": "FAIL", "skipped": "SKIP"}[r.status]
         typer.echo(f"[{marker}] {r.severity:<5} {r.name:<28} failures={r.failures:<6} "
@@ -87,19 +74,7 @@ def check() -> None:
 @app.command("load-graph")
 def load_graph(batch_size: int = typer.Option(1000, min=1)) -> None:
     """Load the warehouse into Neo4j (idempotent MERGE)."""
-    from neo4j import GraphDatabase
-
-    settings = load_settings()
-    driver = GraphDatabase.driver(
-        settings.neo4j_uri, auth=(settings.neo4j_user, settings.neo4j_password)
-    )
-    try:
-        driver.verify_connectivity()
-        with warehouse.connect(settings.warehouse_path) as con:
-            counts = graph.load_graph(con, driver, batch_size=batch_size)
-    finally:
-        driver.close()
-    for label, n in counts.items():
+    for label, n in pipeline.load_graph(load_settings(), batch_size).items():
         typer.echo(f"{label:<22}{n:>8}")
 
 

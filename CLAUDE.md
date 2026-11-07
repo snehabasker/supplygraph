@@ -4,6 +4,9 @@
 - Test: `.\.venv\Scripts\python.exe -m pytest`
 - Lint: `.\.venv\Scripts\python.exe -m ruff check .`
 - Pipeline: `.\.venv\Scripts\supplygraph.exe <ingest-gleif|ingest-sanctions|build|check|load-graph|run-all>`
+- Integration tests: set `$env:SUPPLYGRAPH_INTEGRATION="1"` (Neo4j must be up); they only touch `TESTSG*` LEIs / `TEST-*` ids
+- Dagster: `dagster definitions validate -m supplygraph.orchestration.definitions`; `dagster dev` for the UI
+- Pipeline logic lives in `pipeline.py`; CLI and Dagster assets are thin wrappers — never duplicate logic.
 - Neo4j: `docker compose up -d --wait`; queries via `docker exec -i supplygraph-neo4j cypher-shell` (pipe from bash, not PowerShell — PowerShell adds a BOM)
 
 ## Definition of done (every change)

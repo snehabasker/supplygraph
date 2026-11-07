@@ -1,69 +1,44 @@
 from __future__ import annotations
 
-import csv
-from datetime import UTC, datetime
-
 import pytest
 
-from conftest import APPLE, NVIDIA, ROSNEFT
+from conftest import APPLE, ROSNEFT, make_lei
 from supplygraph import quality, warehouse
 from supplygraph.graph import batched, fetch_dicts
 from supplygraph.ingest import gleif
 
-SANCTIONS_HEADER = [
-    "id", "schema", "name", "aliases", "birth_date", "countries", "addresses", "identifiers",
-    "sanctions", "phones", "emails", "program_ids", "dataset", "first_seen", "last_seen",
-    "last_change",
-]
-
-
-def write_sanctions(path, rows: list[dict]) -> None:
-    with path.open("w", encoding="utf-8", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=SANCTIONS_HEADER, quoting=csv.QUOTE_ALL)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({k: row.get(k, "") for k in SANCTIONS_HEADER})
-
 
 @pytest.fixture
-def built(tmp_path, records):
-    result = gleif.CrawlResult(
-        records=records,
-        relationships={(NVIDIA, APPLE, gleif.DIRECT)},
-    )
-    gleif.write_crawl(result, tmp_path / "gleif")
-    today = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S")
-    write_sanctions(tmp_path / "s.csv", [
-        # LEI hidden among other identifiers -> must match
-        {"id": "NK-ros", "schema": "Organization", "name": "PJSC Rosneft",
-         "identifiers": f"7706107510;{ROSNEFT};1027700043502", "last_seen": today},
-        # LEI as a *substring* of a longer token -> must NOT match
-        {"id": "NK-sub", "schema": "Company", "name": "Lookalike",
-         "identifiers": f"X{APPLE}", "last_seen": today},
-        {"id": "NK-person", "schema": "Person", "name": "Someone", "last_seen": today},
-    ])
+def built(raw_data_dir):
     con = warehouse.connect(":memory:")
-    counts = warehouse.build_all(con, tmp_path / "gleif", tmp_path / "s.csv")
-    yield con, counts
+    counts = warehouse.build_all(
+        con, raw_data_dir / "raw" / "gleif",
+        raw_data_dir / "raw" / "opensanctions" / "targets.simple.csv",
+    )
+    yield con, counts, raw_data_dir
     con.close()
 
 
+def test_make_lei_produces_valid_identifiers() -> None:
+    assert gleif.is_valid_lei(make_lei("TESTSG000000000001"))
+
+
 def test_build_counts(built) -> None:
-    _, counts = built
+    _, counts, _ = built
     assert counts == {
         "companies": 3, "ownership": 1, "sanctions": 3, "company_sanction_matches": 1,
     }
 
 
 def test_lei_match_is_exact_token_not_substring(built) -> None:
-    con, _ = built
+    con, _, _ = built
     rows = fetch_dicts(con, "SELECT lei, sanction_id, match_method FROM company_sanction_matches")
     assert rows == [{"lei": ROSNEFT, "sanction_id": "NK-ros", "match_method": "LEI_IDENTIFIER"}]
 
 
 def test_graph_rows_only_contain_neo4j_serializable_types(built) -> None:
     """Regression: DuckDB DECIMAL -> Python Decimal crashed the Neo4j driver."""
-    con, _ = built
+    con, _, _ = built
     allowed = (str, int, float, bool, type(None))
     for table in ("companies", "ownership", "company_sanction_matches"):
         for row in fetch_dicts(con, f"SELECT * FROM {table}"):
@@ -71,22 +46,23 @@ def test_graph_rows_only_contain_neo4j_serializable_types(built) -> None:
             assert not bad, f"{table}: {bad}"
 
 
-def test_build_is_idempotent(built, tmp_path) -> None:
-    con, first = built
-    second = warehouse.build_all(con, tmp_path / "gleif", tmp_path / "s.csv")
+def test_build_is_idempotent(built) -> None:
+    con, first, data_dir = built
+    second = warehouse.build_all(
+        con, data_dir / "raw" / "gleif", data_dir / "raw" / "opensanctions" / "targets.simple.csv"
+    )
     assert first == second
 
 
 def test_quality_checks_pass_on_clean_data(built) -> None:
-    con, _ = built
+    con, _, _ = built
     results = quality.run_checks(con)
-    failed = [r for r in results if r.status == "fail"]
-    assert failed == []
+    assert [r for r in results if r.status == "fail"] == []
     assert not quality.has_blocking_failures(results)
 
 
 def test_quality_checks_catch_bad_data(built) -> None:
-    con, _ = built
+    con, _, _ = built
     con.execute(f"INSERT INTO companies (lei, legal_name) VALUES ('{APPLE}', 'dup')")
     con.execute(f"INSERT INTO ownership VALUES ('{APPLE}', '{APPLE}', 'DIRECT')")
     con.execute(f"INSERT INTO ownership VALUES ('{APPLE}', 'UNKNOWNLEI000000000', 'SIDEWAYS')")

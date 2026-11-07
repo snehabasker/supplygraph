@@ -45,6 +45,26 @@ supplygraph load-graph
 
 On macOS/Linux use `source .venv/bin/activate` and `cp`.
 
+### Orchestration (Dagster)
+
+```powershell
+$env:DAGSTER_HOME = "$PWD\data\dagster_home"   # persists run history
+dagster dev                                     # UI at http://localhost:3000
+```
+
+```
+gleif_raw ──┐
+            ├─► warehouse ──[quality_gate: blocking]──► neo4j_graph
+sanctions_raw┘
+```
+
+- **`quality_gate`** is a *blocking* asset check: if any error-level check fails, `neo4j_graph`
+  is not materialized, so bad data never reaches the graph.
+- **Jobs:** `full_refresh` (weekly, Mon 05:00 UTC) and `sanctions_refresh` (daily 06:00 UTC —
+  sanctions change daily, ownership rarely, so only sanctions and its downstream assets rerun).
+- Network assets retry twice with exponential backoff.
+- Schedules start **stopped**; turn them on in the UI.
+
 ### Try it in Neo4j Browser
 
 ```cypher
@@ -64,14 +84,20 @@ RETURN child.legal_name, child.legal_country, parent.legal_name, s.program_ids;
 ## Development
 
 ```powershell
-pytest --cov=supplygraph     # unit tests, no network needed
+pytest --cov=supplygraph     # unit + Dagster tests, no network needed
 ruff check .                 # lint
+
+# Neo4j integration tests (needs `docker compose up -d`; only touches TESTSG*/TEST-* nodes)
+$env:SUPPLYGRAPH_INTEGRATION = "1"; pytest
 ```
+
+CI (GitHub Actions) runs lint, Dagster definition validation, and all tests against a real
+Neo4j service container on every push and PR.
 
 ## Roadmap
 
 - [x] **M1 — Ingestion & graph:** GLEIF + OpenSanctions → DuckDB → quality checks → Neo4j
-- [ ] **M2 — Orchestration:** Dagster assets, schedules, CI (GitHub Actions)
+- [x] **M2 — Orchestration:** Dagster assets, blocking quality gate, schedules, CI with Neo4j
 - [ ] **M3 — Entity resolution:** fuzzy name/country matching + LLM adjudication, precision/recall eval
 - [ ] **M4 — Filings & news:** LLM extraction of suppliers from SEC 10-Ks; GDELT disruption events
 - [ ] **M5 — Graph ML:** risk propagation, link prediction (PyTorch Geometric)
