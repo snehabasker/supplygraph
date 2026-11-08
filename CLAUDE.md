@@ -3,7 +3,7 @@
 ## Commands (Windows; venv at .venv)
 - Test: `.\.venv\Scripts\python.exe -m pytest`
 - Lint: `.\.venv\Scripts\python.exe -m ruff check .`
-- Pipeline: `.\.venv\Scripts\supplygraph.exe <ingest-gleif|ingest-sanctions|ingest-filings|extract-suppliers|ingest-news|build|resolve|check|load-graph|run-all>`
+- Pipeline: `.\.venv\Scripts\supplygraph.exe <ingest-gleif|ingest-sanctions|ingest-filings|extract-suppliers|ingest-news|build|resolve|score-risk|scenario|check|load-graph|run-all>`
 - Integration tests: set `$env:SUPPLYGRAPH_INTEGRATION="1"` (Neo4j must be up); they only touch `TESTSG*` LEIs / `TEST-*` ids
 - Dagster: `dagster definitions validate -m supplygraph.orchestration.definitions`; `dagster dev` for the UI
 - Pipeline logic lives in `pipeline.py`; CLI and Dagster assets are thin wrappers — never duplicate logic.
@@ -32,6 +32,15 @@
 - Link type follows method: LLM -> `SUPPLIES`, RULES -> `POSSIBLE_SUPPLIER` (enforced by a check).
 - Name -> LEI resolution changes must bump `RESOLVER_VERSION` in `extract/link.py`.
 - `SEC_USER_AGENT` lives only in `.env`; it contains a personal email — never commit it.
+
+## Risk engine
+- Weights live in `risk/engine.py:RiskConfig`; any change must be followed by
+  `supplygraph evaluate-risk` and docs/risk.md updated (sensitivity + link-prediction tables).
+- Keep the properties: bounded, monotone, cycle-safe, every non-zero score explained.
+- Which link types a signal travels is defined in `SIGNAL_RELATIONS` — sanctions follow
+  ownership, disruptions follow supply; don't let news flow parent -> subsidiary.
+- A learned link-prediction model only ships if it beats the popularity baseline in
+  `risk/linkpred.leave_one_out`.
 
 ## Rules
 - `docs/ontology.md` is the contract. Changing an object/link type means updating it first.

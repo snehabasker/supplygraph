@@ -11,6 +11,9 @@ Every source is mapped *into* these types; nothing downstream reads raw source f
 | `SanctionedEntity` | `id` (OpenSanctions) | OpenSanctions | `name`, `schema`, `countries`, `sanctions`, `program_ids`, `dataset`, `last_seen` |
 | `NewsEvent` | `id` (GDELT GKG record id) | GDELT | `published_at`, `title`, `url`, `domain`, `event_types`, `tone`, `locations` |
 
+`Company.risk_score` ∈ [0, 1] = `own_risk` + `inherited_risk`; `Company.risk_drivers` (JSON)
+lists the signals and link paths that produced it (see [risk.md](risk.md)).
+
 `Company.watchlist` is true for companies SupplyGraph monitors: the seeds, the SEC filers and
 both ends of every asserted `SUPPLIES` link (`POSSIBLE_SUPPLIER` leads don't count). Only
 watchlist companies are matched against news. `NewsEvent.copies` counts syndicated copies
@@ -72,5 +75,6 @@ Actions are the only way the agent changes state, and every action is audited:
 - A company resolved by identifier is never additionally fuzzy-matched.
 - Supplier links reference existing companies, are never self-loops, carry non-empty
   `evidence`, and their link type matches their `extraction_method`.
+- Every company has a risk score in [0, 1]; every non-zero score is explained by drivers.
 - Every `NewsEvent` has at least one known event type; `MENTIONED_IN` only points from
   watchlist companies.

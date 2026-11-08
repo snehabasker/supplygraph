@@ -167,6 +167,49 @@ def evaluate_er(
     typer.echo(f"Full report -> {out}")
 
 
+@app.command("score-risk")
+def score_risk() -> None:
+    """Propagate risk over ownership and supplier links (after `resolve`)."""
+    for key, n in pipeline.score_risk(load_settings()).items():
+        typer.echo(f"{key:<20}{n:>8}")
+
+
+@app.command()
+def scenario(
+    company: str = typer.Argument(..., help="LEI, legal name or short name, e.g. TSMC."),
+    severity: float = typer.Option(1.0, min=0.0, max=1.0),
+    top: int = typer.Option(15, min=1),
+) -> None:
+    """What if COMPANY is disrupted? Companies whose risk rises, and through which links."""
+    result = pipeline.risk_scenario(load_settings(), company, severity)
+    impacted = result["impacted"]
+    typer.echo(f"Disruption of {result['name']} ({result['lei']}), severity {severity}: "
+               f"{len(impacted)} companies affected")
+    for r in impacted[:top]:
+        via = " -> ".join(r["path"])
+        typer.echo(f"  +{r['delta']:.3f}  {r['name']}\n         via {via} "
+                   f"[{', '.join(r['relations'])}]")
+
+
+@app.command("evaluate-risk")
+def evaluate_risk(out: Path = typer.Option(Path("data/risk_eval_report.json"))) -> None:
+    """Weight-sensitivity of the risk ranking, and supplier link-prediction baselines."""
+    report = pipeline.evaluate_risk(load_settings())
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    s = report["sensitivity"]
+    typer.echo(f"Sensitivity ({s['baseline_at_risk']} at-risk companies; each weight x0.5 "
+               f"and x1.5): min top-{s['top_k']} overlap {s['min_top_k_overlap']:.2f}, "
+               f"min Kendall tau {s['min_kendall_tau']:.2f}")
+    lp = report["link_prediction"]
+    typer.echo(f"\nLink prediction, leave-one-out: {lp['queries']} queries over "
+               f"{lp['links']} links, ~{lp['candidates_per_query']} candidates each")
+    typer.echo(f"{'method':<14}{'MRR':>7}{'hit@1':>8}{'hit@3':>8}")
+    for name, m in lp["methods"].items():
+        typer.echo(f"{name:<14}{m['mrr']:>7.3f}{m['hit@1']:>8.3f}{m['hit@3']:>8.3f}")
+    typer.echo(f"Full report -> {out}")
+
+
 @app.command()
 def check() -> None:
     """Run data quality checks. Exits with code 1 if any error-level check fails."""
@@ -204,6 +247,7 @@ def run_all(
     ingest_news(hours=24)
     build()
     resolve(llm=False)
+    score_risk()
     check()
     if not skip_graph:
         load_graph(batch_size=1000)

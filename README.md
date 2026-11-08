@@ -45,6 +45,7 @@ supplygraph extract-suppliers   # supplier links + GLEIF lookup of each supplier
 supplygraph ingest-news         # last 24 h of GDELT (~160 MB streamed, a few MB kept)
 supplygraph build
 supplygraph resolve
+supplygraph score-risk
 supplygraph check
 supplygraph load-graph
 # or: supplygraph run-all
@@ -62,7 +63,7 @@ dagster dev                                     # UI at http://localhost:3000
 ```
 gleif_raw ───────────────────────────┐
 sanctions_raw ───────────────────────┤
-sec_filings ─► supplier_extraction ──┼─► warehouse ─[quality_gate]─► entity_resolution ─[match_gate]─► neo4j_graph
+sec_filings ─► supplier_extraction ──┼─► warehouse ─[quality_gate]─► entity_resolution ─[match_gate]─► risk_scores ─[risk_gate]─► neo4j_graph
 news_raw ────────────────────────────┘
 ```
 
@@ -158,6 +159,36 @@ RETURN c.legal_name, n.event_types, n.title, n.url ORDER BY n.published_at DESC;
 
 On the live data, TSMC is a supplier to 6 of the 12 filers and Samsung Electronics to 3.
 
+## Explainable risk scores and scenarios
+
+Risk signals (sanctions matches, review-queue candidates, disruption news) propagate over
+ownership and supplier links. Sanctions follow legal control; disruptions follow physical
+dependency. Every score stores the path that produced it.
+
+```powershell
+supplygraph score-risk          # after resolve; scores land on Company nodes
+supplygraph scenario TSMC       # what if TSMC is disrupted? who is hit, and through which links
+supplygraph evaluate-risk       # weight sensitivity + supplier link-prediction baselines
+```
+
+```
+Disruption of 台灣積體電路製造股份有限公司 (549300KB6NK5SBD14S87), severity 1.0: 6 companies affected
+  +0.250  ADVANCED MICRO DEVICES, INC.
+         via 台灣積體電路製造股份有限公司 -> ADVANCED MICRO DEVICES, INC. [POSSIBLE_SUPPLIER]
+  ...
+```
+
+```cypher
+// Highest-risk companies and why
+MATCH (c:Company) WHERE c.risk_score > 0
+RETURN c.legal_name, c.risk_score, c.inherited_risk, c.risk_drivers ORDER BY c.risk_score DESC;
+```
+
+Rosneft Deutschland GmbH scores 0.81 purely through ownership by its sanctioned parent. The ranking
+holds up when weights change: every weight scaled ×0.5 or ×1.5 still keeps at least 9 of the top 10.
+For supplier recommendation, a popularity baseline beats collaborative filtering on today's 30
+links, which is why there is no GNN yet. Details and the decision record are in [docs/risk.md](docs/risk.md).
+
 ## Development
 
 ```powershell
@@ -177,7 +208,7 @@ Neo4j service container on every push and PR.
 - [x] **M2 — Orchestration:** Dagster assets, blocking quality gate, schedules, CI with Neo4j
 - [x] **M3 — Entity resolution:** registration-number links, fuzzy name/country matching, Claude adjudication, review queue, dev/test evaluation
 - [x] **M4 — Filings & news:** supplier extraction from SEC 10-K/20-F (rules + Claude), GLEIF entity linking, GDELT disruption events, extraction eval
-- [ ] **M5 — Graph ML:** risk propagation, link prediction (PyTorch Geometric)
+- [x] **M5 — Graph risk:** explainable risk propagation, disruption scenarios, weight sensitivity, supplier link-prediction benchmark (GNN deferred, see docs/risk.md)
 - [ ] **M6 — Agent:** GraphRAG Q&A + audited actions, evaluated with an eval suite
 - [ ] **M7 — UI:** React + Cytoscape graph explorer and risk dashboard
 - [ ] **M8 — Deploy:** Helm, observability, ADRs, demo

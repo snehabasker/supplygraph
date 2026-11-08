@@ -3,7 +3,7 @@
     gleif_raw ─────────────────────┐
     sanctions_raw ─────────────────┤
     sec_filings ─► supplier_extraction ─┼─► warehouse ─[quality_gate]─► entity_resolution
-    news_raw ──────────────────────┘                                   ─[match_gate]─► neo4j_graph
+    news_raw ──────────────────────┘      ─[match_gate]─► risk_scores ─[risk_gate]─► neo4j_graph
 
 Run locally from the repo root:  dagster dev   (UI at http://localhost:3000)
 """
@@ -150,15 +150,27 @@ def match_gate(sg: SupplyGraphResource) -> AssetCheckResult:
     return _gate(sg)
 
 
-@asset(deps=[entity_resolution], group_name="graph", kinds={"neo4j"}, retry_policy=NETWORK_RETRY,
+@asset(deps=[entity_resolution], group_name="warehouse", kinds={"python", "duckdb"},
+       description="Explainable risk propagation over ownership and supplier links.")
+def risk_scores(sg: SupplyGraphResource) -> MaterializeResult:
+    return MaterializeResult(metadata=dict(pipeline.score_risk(sg.settings())))
+
+
+@asset_check(asset=risk_scores, blocking=True,
+             description="Risk scores are bounded, complete and explained.")
+def risk_gate(sg: SupplyGraphResource) -> AssetCheckResult:
+    return _gate(sg)
+
+
+@asset(deps=[risk_scores], group_name="graph", kinds={"neo4j"}, retry_policy=NETWORK_RETRY,
        description="Ontology-shaped knowledge graph in Neo4j (idempotent MERGE).")
 def neo4j_graph(sg: SupplyGraphResource) -> MaterializeResult:
     return MaterializeResult(metadata=dict(pipeline.load_graph(sg.settings())))
 
 
 ALL_ASSETS = [gleif_raw, sanctions_raw, sec_filings, supplier_extraction, news_raw, warehouse,
-              entity_resolution, neo4j_graph]
-ALL_CHECKS = [quality_gate, match_gate]
+              entity_resolution, risk_scores, neo4j_graph]
+ALL_CHECKS = [quality_gate, match_gate, risk_gate]
 
 full_refresh_job = define_asset_job(
     "full_refresh", selection=AssetSelection.all(),

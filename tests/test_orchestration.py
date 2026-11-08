@@ -57,6 +57,14 @@ def test_warehouse_and_entity_resolution_pass_both_gates(raw_data_dir) -> None:
     assert all(e.passed for e in evaluations)
 
 
+def test_risk_scores_asset_passes_its_gate(raw_data_dir) -> None:
+    result = run(raw_data_dir, ["warehouse", "entity_resolution", "risk_scores"])
+    assert result.success
+    assert materialized(result) == {"warehouse", "entity_resolution", "risk_scores"}
+    assert {e.check_name for e in result.get_asset_check_evaluations() if e.passed} == {
+        "quality_gate", "match_gate", "risk_gate"}
+
+
 def test_failing_quality_gate_blocks_everything_downstream(raw_data_dir) -> None:
     # Corrupt the raw data: a company that owns itself.
     rels = raw_data_dir / "raw" / "gleif" / "relationships.jsonl"

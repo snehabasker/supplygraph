@@ -42,6 +42,13 @@ MATCH (c:Company) WHERE c.lei IN $leis
 SET c.watchlist = c.lei IN $watch
 """
 
+SET_RISK = """
+UNWIND $rows AS r
+MATCH (c:Company {lei: r.lei})
+SET c.risk_score = r.risk_score, c.own_risk = r.own_risk,
+    c.inherited_risk = r.inherited_risk, c.risk_drivers = r.drivers
+"""
+
 UPSERT_NEWS = """
 UNWIND $rows AS r
 MERGE (n:NewsEvent {id: r.id})
@@ -179,6 +186,11 @@ def load_graph(con: duckdb.DuckDBPyConnection, driver: Driver, batch_size: int =
     }
     counts |= _load_supply_chain(con, driver, leis, batch_size)
     counts |= _load_news(con, driver, leis, batch_size)
+    if table_exists(con, "company_risk"):
+        risk = fetch_dicts(con, "SELECT lei, risk_score, own_risk, inherited_risk, drivers "
+                                "FROM company_risk")
+        _write(driver, SET_RISK, risk, batch_size, "risk scores")
+        counts["risk_scores"] = sum(1 for r in risk if r["risk_score"] > 0)
     return counts
 
 

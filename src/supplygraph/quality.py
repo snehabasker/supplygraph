@@ -128,6 +128,17 @@ CHECKS: list[Check] = [
               "WHERE event_types IS NULL OR len(event_types) = 0"),
     Check("news_id_unique", "news_events", ERROR, "GDELT record ids are unique",
           sql="SELECT count(*) - count(DISTINCT id) FROM news_events"),
+    Check("risk_scores_bounded", "company_risk", ERROR,
+          "Risk scores are in [0, 1] and own + inherited = total",
+          sql="""SELECT count(*) FROM company_risk WHERE risk_score < 0 OR risk_score > 1
+                 OR own_risk < 0 OR own_risk > risk_score + 1e-9
+                 OR abs(own_risk + inherited_risk - risk_score) > 1e-5"""),
+    Check("risk_scores_explained", "company_risk", ERROR,
+          "Every non-zero risk score lists the signals and paths that produced it",
+          sql="SELECT count(*) FROM company_risk WHERE risk_score > 0 "
+              "AND (drivers IS NULL OR NOT json_valid(drivers) OR json_array_length(drivers) = 0)"),
+    Check("risk_covers_companies", "company_risk", ERROR, "Every company has a risk row",
+          sql="SELECT count(*) FROM companies c ANTI JOIN company_risk r USING (lei)"),
     Check("company_news_references_valid", "company_news", ERROR,
           "News links point from watchlist companies to existing events",
           sql="""SELECT count(*) FROM company_news n

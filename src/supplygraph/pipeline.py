@@ -139,6 +139,62 @@ def evaluate_entities(settings: Settings, eval_dir: Path, use_llm: bool = False)
         return evaluate(con, eval_dir, adjudicator=adjudicator)
 
 
+def score_risk(settings: Settings) -> dict[str, int]:
+    from supplygraph.risk import engine
+
+    cfg = engine.RiskConfig()
+    with warehouse.connect(settings.warehouse_path) as con:
+        return engine.write_scores(con, engine.score(con, cfg), cfg)
+
+
+def find_company(con, query: str) -> tuple[str, str]:
+    """An LEI, or a name / short name ("TSMC") -> (lei, legal name). Raises if not unique."""
+    from supplygraph.er.normalize import normalize
+    from supplygraph.ingest.gleif import is_valid_lei
+
+    names = dict(con.execute("SELECT lei, legal_name FROM companies").fetchall())
+    if is_valid_lei(query.strip().upper()) and query.strip().upper() in names:
+        lei = query.strip().upper()
+        return lei, names[lei]
+    target = normalize(query)
+    matches = set()
+    for lei, legal_name, other_names in con.execute(
+        "SELECT lei, legal_name, other_names FROM companies"
+    ).fetchall():
+        if any(normalize(n) == target for n in [legal_name, *(other_names or "").split(";")]):
+            matches.add(lei)
+    if not matches and warehouse.table_exists(con, "supplier_mentions"):
+        # Short names from filings: "TSMC", "Samsung".
+        for lei, written in con.execute(
+            "SELECT DISTINCT supplier_lei, name_as_written FROM supplier_mentions "
+            "WHERE supplier_lei IS NOT NULL"
+        ).fetchall():
+            if normalize(written) == target:
+                matches.add(lei)
+    if len(matches) != 1:
+        found = ", ".join(f"{names[m]} ({m})" for m in sorted(matches)) or "none"
+        raise ValueError(f"{query!r} must match exactly one company; found: {found}")
+    lei = matches.pop()
+    return lei, names[lei]
+
+
+def risk_scenario(settings: Settings, company: str, severity: float = 1.0) -> dict:
+    from supplygraph.risk import engine
+
+    with warehouse.connect(settings.warehouse_path) as con:
+        lei, name = find_company(con, company)
+        return {"lei": lei, "name": name, "severity": severity,
+                "impacted": engine.scenario(con, lei, severity)}
+
+
+def evaluate_risk(settings: Settings) -> dict:
+    from supplygraph.risk import engine, linkpred
+
+    with warehouse.connect(settings.warehouse_path) as con:
+        return {"sensitivity": engine.sensitivity(con),
+                "link_prediction": linkpred.leave_one_out(linkpred.load_links(con))}
+
+
 def check(settings: Settings) -> list[quality.CheckResult]:
     with warehouse.connect(settings.warehouse_path) as con:
         return quality.run_checks(con)
