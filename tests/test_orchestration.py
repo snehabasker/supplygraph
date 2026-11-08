@@ -33,8 +33,19 @@ def materialized(result) -> set[str]:
 
 
 def test_definitions_load_with_jobs_and_schedules() -> None:
-    assert {j.name for j in defs.jobs} >= {"full_refresh", "sanctions_refresh"}
-    assert len(list(defs.schedules)) == 2
+    assert {j.name for j in defs.jobs} >= {"full_refresh", "sanctions_refresh", "news_refresh"}
+    assert len(list(defs.schedules)) == 3
+
+
+def test_sec_assets_skip_instead_of_failing_without_user_agent(tmp_path, monkeypatch) -> None:
+    # An empty value wins over the repo's .env (load_dotenv never overrides set variables).
+    monkeypatch.setenv("SEC_USER_AGENT", "")
+    result = run(tmp_path, ["sec_filings", "supplier_extraction"])
+    assert result.success
+    assert materialized(result) == {"sec_filings", "supplier_extraction"}
+    [filings] = [e for e in result.get_asset_materialization_events()
+                 if e.asset_key.to_user_string() == "sec_filings"]
+    assert "skipped" in filings.event_specific_data.materialization.metadata
 
 
 def test_warehouse_and_entity_resolution_pass_both_gates(raw_data_dir) -> None:

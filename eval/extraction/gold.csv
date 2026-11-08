@@ -1,0 +1,32 @@
+filer_cik,supplier,aliases,label,note
+1045810,Taiwan Semiconductor Manufacturing Company Limited,TSMC,supplier,foundry for wafers
+1045810,"Samsung Electronics Co., Ltd.",Samsung;Samsung Electronics,supplier,foundry and memory
+1045810,SK Hynix Inc.,SK hynix,supplier,memory
+1045810,"Micron Technology, Inc.",Micron Technology;Micron,supplier,memory
+1045810,"Hon Hai Precision Industry Co., Ltd.",Hon Hai;Foxconn,supplier,contract manufacturer
+1045810,Wistron Corporation,Wistron,supplier,contract manufacturer
+1045810,Fabrinet,,supplier,contract manufacturer (no corporate suffix in the text)
+50863,Taiwan Semiconductor Manufacturing Company Limited,TSMC,supplier,"tiles and products; the same sentences call TSMC a key foundry competitor"
+50863,ASML Holding N.V.,ASML,supplier,sole supplier of EUV lithography tools
+1046179,Vanguard International Semiconductor Corporation,VIS,supplier,"associate; manufactures wafers for TSMC, NT$878m purchases in 2025"
+1046179,Systems on Silicon Manufacturing Company Pte. Ltd.,SSMC,supplier,"joint venture dedicated to manufacturing wafers for TSMC and NXP"
+1046179,"Xintec, Inc.",Xintec,ambiguous,"subsidiary described as a supplier of wafer level packaging service; supply to TSMC implied, not stated"
+937966,Carl Zeiss SMT GmbH,Carl Zeiss SMT;Zeiss,supplier,single supplier of optical columns
+937966,Carl Zeiss SMT Holding GmbH & Co. KG,Carl Zeiss SMT Holding GmbH;Carl Zeiss SMT Holding,ambiguous,"parent of the supplier; purchases are reported against the holding and its subsidiaries"
+937966,Carl Zeiss AG,,ambiguous,guarantor and ultimate parent of the supplier
+2488,Taiwan Semiconductor Manufacturing Company Limited,TSMC,supplier,foundry
+2488,GLOBALFOUNDRIES Inc.,GF;GlobalFoundries,supplier,foundry
+2488,United Microelectronics Corporation,UMC,supplier,foundry for programmable logic
+2488,"Samsung Electronics Co., Ltd.",Samsung;Samsung Electronics,supplier,foundry for programmable logic
+2488,Sanmina Corporation,Sanmina,ambiguous,"bought AMD's ZT manufacturing business; 'will be our preferred partner for manufacturing'"
+804328,Taiwan Semiconductor Manufacturing Company,TSMC;Taiwan Semiconductor Manufacturing Company Limited,supplier,primary foundry supplier
+804328,"Samsung Electronics Co., Ltd.",Samsung;Samsung Electronics,supplier,foundry and memory
+804328,GlobalFoundries Inc.,GlobalFoundries;GF;GLOBALFOUNDRIES Inc.,supplier,foundry (no corporate suffix in the text)
+804328,"Micron Technology, Inc.",Micron Technology;Micron,supplier,memory (no corporate suffix in the text)
+1730168,Taiwan Semiconductor Manufacturing Company Limited,TSMC,supplier,foundry and assembly/test
+1730168,"Advanced Semiconductor Engineering, Inc.",ASE,supplier,assembly and test
+1730168,Foxconn Technology Group,Foxconn;Hon Hai Precision Industry Co. Ltd.,supplier,assembly and test (no corporate suffix in the text)
+1730168,"Amkor Technology, Inc.",Amkor,supplier,assembly and test
+1730168,"Siliconware Precision Industries Co., Ltd.",SPIL;Siliconware Precision Industries Ltd.,supplier,assembly and test
+1318605,Panasonic,Panasonic Holdings Corporation;Panasonic Energy,supplier,battery cells (no corporate suffix in the text)
+1318605,Contemporary Amperex Technology Co. Limited,CATL,supplier,battery cells

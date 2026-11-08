@@ -3,7 +3,7 @@
 ## Commands (Windows; venv at .venv)
 - Test: `.\.venv\Scripts\python.exe -m pytest`
 - Lint: `.\.venv\Scripts\python.exe -m ruff check .`
-- Pipeline: `.\.venv\Scripts\supplygraph.exe <ingest-gleif|ingest-sanctions|build|check|load-graph|run-all>`
+- Pipeline: `.\.venv\Scripts\supplygraph.exe <ingest-gleif|ingest-sanctions|ingest-filings|extract-suppliers|ingest-news|build|resolve|check|load-graph|run-all>`
 - Integration tests: set `$env:SUPPLYGRAPH_INTEGRATION="1"` (Neo4j must be up); they only touch `TESTSG*` LEIs / `TEST-*` ids
 - Dagster: `dagster definitions validate -m supplygraph.orchestration.definitions`; `dagster dev` for the UI
 - Pipeline logic lives in `pipeline.py`; CLI and Dagster assets are thin wrappers — never duplicate logic.
@@ -22,6 +22,16 @@
   (see docs/entity-resolution.md).
 - Claude code: model from `SUPPLYGRAPH_LLM_MODEL` (default `claude-opus-5-5`); structured output via
   `client.beta.messages.parse`; failures go to review, never to a silent decision.
+
+## Supplier extraction and news
+- Any change to `extract/` must be followed by `supplygraph evaluate-extraction`; report the
+  precision / recall deltas and read the listed false positives. `test_committed_eval_set...`
+  pins the rule baseline's TP/FP/FN — update docs/extraction.md when it moves.
+- Never edit `eval/extraction/gold.csv` to make a number go up; it records what the passage
+  states. Rebuilding passages (`build-extraction-eval-set`) requires re-checking gold coverage.
+- Link type follows method: LLM -> `SUPPLIES`, RULES -> `POSSIBLE_SUPPLIER` (enforced by a check).
+- Name -> LEI resolution changes must bump `RESOLVER_VERSION` in `extract/link.py`.
+- `SEC_USER_AGENT` lives only in `.env`; it contains a personal email — never commit it.
 
 ## Rules
 - `docs/ontology.md` is the contract. Changing an object/link type means updating it first.

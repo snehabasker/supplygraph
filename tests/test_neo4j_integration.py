@@ -84,6 +84,56 @@ def test_load_is_idempotent_and_answers_exposure_query(driver, con) -> None:
     assert [r["lei"] for r in records] == [CHILD]
 
 
+def test_supply_links_and_news_load_and_prune(driver, tmp_path) -> None:
+    import json
+
+    from conftest import filing_row, mention_row, news_event, write_jsonl
+
+    records = {PARENT: make_record(PARENT, "Test Customer Inc.", "US"),
+               CHILD: make_record(CHILD, "Test Foundry Co., Ltd.", "TW"),
+               CLEAN: make_record(CLEAN, "Test Lead Corp", "US")}
+    write_raw_data(tmp_path, records, set(), [{"id": "TEST-1", "schema": "Company",
+                                               "name": "Nobody", "last_seen": now_iso()}])
+    raw = tmp_path / "raw"
+    (raw / "gleif" / "seeds.json").write_text(json.dumps([PARENT]))
+    write_jsonl(raw / "sec" / "filings.jsonl", [filing_row(PARENT, "999", "Test Customer")])
+    write_jsonl(raw / "sec" / "supplier_mentions.jsonl", [
+        mention_row(PARENT, "999", "Test Foundry Co., Ltd.", CHILD, "LLM"),
+        mention_row(PARENT, "999", "Test Lead Corp", CLEAN, "RULES"),
+    ])
+    write_jsonl(raw / "gdelt" / "events.jsonl", [
+        news_event("TEST-N1", ["test foundry"], ["FIRE"])])
+
+    def build_and_load() -> None:
+        c = warehouse.connect(":memory:")
+        warehouse.build_all(c, raw / "gleif", raw / "opensanctions" / "targets.simple.csv",
+                            raw / "sec", raw / "gdelt")
+        graph.load_graph(c, driver)
+        c.close()
+
+    for _ in range(2):
+        build_and_load()
+    assert count(driver, f"MATCH ({{lei: '{CHILD}'}})-[r:SUPPLIES]->() RETURN count(r)") == 1
+    assert count(driver, f"MATCH ({{lei: '{CLEAN}'}})-[r:POSSIBLE_SUPPLIER]->() "
+                         "RETURN count(r)") == 1
+    assert count(driver, f"MATCH ({{lei: '{CHILD}'}})-[:MENTIONED_IN]->(n:NewsEvent "
+                         "{id: 'TEST-N1'}) RETURN count(n)") == 1
+    records_, _, _ = driver.execute_query(
+        f"MATCH (c:Company {{lei: '{CHILD}'}}) RETURN c.watchlist AS w")
+    assert records_[0]["w"] is True
+
+    # The extractor no longer finds the lead and the news window moved on: both disappear.
+    write_jsonl(raw / "sec" / "supplier_mentions.jsonl", [
+        mention_row(PARENT, "999", "Test Foundry Co., Ltd.", CHILD, "LLM")])
+    write_jsonl(raw / "gdelt" / "events.jsonl", [])
+    build_and_load()
+    assert count(driver, "MATCH ()-[r:POSSIBLE_SUPPLIER]->(c) WHERE c.lei STARTS WITH "
+                         "'TESTSG' RETURN count(r)") == 0
+    assert count(driver, "MATCH (n:NewsEvent) WHERE n.id STARTS WITH 'TEST-' "
+                         "RETURN count(n)") == 0
+    assert count(driver, f"MATCH ({{lei: '{CHILD}'}})-[r:SUPPLIES]->() RETURN count(r)") == 1
+
+
 def test_uniqueness_constraint_is_enforced(driver, con) -> None:
     from neo4j.exceptions import ConstraintError
 

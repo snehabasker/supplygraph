@@ -4,21 +4,24 @@
 
 > *"Which of our suppliers are exposed to sanctions, hidden ownership, or disruption — and what should we do about it?"*
 
-SupplyGraph ingests open corporate-ownership and sanctions data, maps it into a typed ontology
-(objects, links, actions), loads it into Neo4j, and (in later milestones) layers graph ML and a
-GraphRAG agent on top.
+SupplyGraph ingests open corporate-ownership, sanctions, SEC filing and news data, maps it into
+a typed ontology (objects, links, actions), loads it into Neo4j, and (in later milestones)
+layers graph ML and a GraphRAG agent on top.
 
 ## Architecture
 
 ```
-GLEIF API ──┐                                 ┌─► Neo4j knowledge graph ─► GraphRAG agent (M6)
-            ├─► raw JSONL/CSV ─► DuckDB ─► DQ ┤                          └─► Explorer UI (M7)
-OpenSanctions┘     (bronze)      (silver) checks└─► Graph ML risk scores (M5)
+GLEIF API ─────┐                                     ┌─► Neo4j knowledge graph ─► GraphRAG agent (M6)
+OpenSanctions ─┤                                     │                         └─► Explorer UI (M7)
+SEC EDGAR ─► supplier extraction ─┼─► raw JSONL/CSV ─► DuckDB ─► DQ checks ─┤
+   (10-K/20-F)  (rules | Claude)  │     (bronze)       (silver)              └─► Graph ML risk scores (M5)
+GDELT GKG ─────┘
 ```
 
 | Layer | Tech | Why |
 |---|---|---|
-| Ingestion | `httpx`, retry + rate limiting | GLEIF allows 60 req/min; transient failures are retried, 404s are data |
+| Ingestion | `httpx`, retry + rate limiting | GLEIF allows 60 req/min, SEC 10 req/s; transient failures are retried, 404s are data |
+| Extraction | regex baseline, Claude structured output | Supplier relationships from annual reports; every link quotes a verbatim sentence |
 | Warehouse | DuckDB | Zero-ops columnar SQL; full-refresh builds are idempotent |
 | Quality | SQL checks, error/warn severity | Pipeline refuses to load the graph on blocking failures |
 | Graph | Neo4j 5 | Native traversal for ownership chains; uniqueness constraints |
@@ -31,13 +34,17 @@ See [docs/ontology.md](docs/ontology.md) for the object/link model.
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e ".[dev]"
-copy .env.example .env          # then set NEO4J_PASSWORD
+copy .env.example .env          # then set NEO4J_PASSWORD and SEC_USER_AGENT
 
 docker compose up -d            # Neo4j at http://localhost:7474
 
 supplygraph ingest-gleif        # ~2-3 min (rate-limited)
 supplygraph ingest-sanctions    # ~80 MB download
+supplygraph ingest-filings      # latest 10-K / 20-F of 12 filers (~60 MB, once)
+supplygraph extract-suppliers   # supplier links + GLEIF lookup of each supplier (~2 min)
+supplygraph ingest-news         # last 24 h of GDELT (~160 MB streamed, a few MB kept)
 supplygraph build
+supplygraph resolve
 supplygraph check
 supplygraph load-graph
 # or: supplygraph run-all
@@ -53,16 +60,20 @@ dagster dev                                     # UI at http://localhost:3000
 ```
 
 ```
-gleif_raw ──┐
-            ├─► warehouse ─[quality_gate]─► entity_resolution ─[match_gate]─► neo4j_graph
-sanctions_raw┘
+gleif_raw ───────────────────────────┐
+sanctions_raw ───────────────────────┤
+sec_filings ─► supplier_extraction ──┼─► warehouse ─[quality_gate]─► entity_resolution ─[match_gate]─► neo4j_graph
+news_raw ────────────────────────────┘
 ```
 
 - **`quality_gate`** and **`match_gate`** are *blocking* asset checks: if any error-level check
   fails, nothing downstream is materialized, so bad data never reaches the graph.
 - Set `use_llm: true` on the `sg` resource to let Claude adjudicate the review band.
-- **Jobs:** `full_refresh` (weekly, Mon 05:00 UTC) and `sanctions_refresh` (daily 06:00 UTC —
-  sanctions change daily, ownership rarely, so only sanctions and its downstream assets rerun).
+- **Jobs:** `full_refresh` (weekly, Mon 05:00 UTC), `sanctions_refresh` (daily 06:00 UTC —
+  sanctions change daily, ownership rarely, so only sanctions and its downstream assets rerun)
+  and `news_refresh` (every 6 h).
+- Set `extraction_method: llm` on the `sg` resource for Claude-extracted `SUPPLIES` links.
+  Without `SEC_USER_AGENT`, the SEC assets report "skipped" instead of failing the run.
 - Network assets retry twice with exponential backoff.
 - Schedules start **stopped**; turn them on in the UI.
 
@@ -107,6 +118,46 @@ MATCH (c:Company)-[p:POSSIBLE_SANCTIONS_MATCH]->(s:SanctionedEntity)
 RETURN c.legal_name, s.name, p.score, p.country_relation ORDER BY p.score DESC;
 ```
 
+## Supply chains from filings, disruptions from news
+
+Annual reports name key suppliers in prose. SupplyGraph pulls the latest 10-K / 20-F from SEC
+EDGAR, finds the passages that mention supply relationships, extracts suppliers, resolves each
+one to its legal entity in GLEIF, and links them into the graph with the verbatim sentence as
+evidence.
+
+```powershell
+supplygraph extract-suppliers --method rules   # baseline -> POSSIBLE_SUPPLIER (review queue)
+supplygraph extract-suppliers --method llm     # Claude -> SUPPLIES (needs Anthropic credentials)
+supplygraph evaluate-extraction [--llm]        # precision/recall on the hand-labelled gold set
+```
+
+| Gold set: 82 passages, 12 filers, 27 supplier relationships | Precision | Recall |
+|---|---:|---:|
+| Rule baseline | 0.559 | 0.704 |
+| Claude extractor | not yet measured (needs credentials) | |
+
+The baseline can't tell a supplier from a competitor, customer or joint-venture partner, so its
+links are leads, not facts. That is exactly the gap the Claude extractor is for. Why, how it's
+measured, the entity-linking traps (CATL's German subsidiary, Samsung's Greek one), and the
+GDELT relevance analysis are in [docs/extraction.md](docs/extraction.md).
+
+```cypher
+// Concentration risk: suppliers that several monitored companies depend on
+MATCH (s:Company)-[:SUPPLIES|POSSIBLE_SUPPLIER]->(c:Company)
+WITH s, collect(c.legal_name) AS customers WHERE size(customers) > 1
+RETURN s.legal_name, s.legal_country, size(customers) AS n, customers ORDER BY n DESC;
+
+// The evidence behind a link, straight from the filing
+MATCH (s:Company)-[l:POSSIBLE_SUPPLIER]->(c:Company {legal_name: 'NVIDIA CORPORATION'})
+RETURN s.legal_name, l.evidence, l.form, l.accession;
+
+// Disruption signals on companies we monitor
+MATCH (c:Company {watchlist: true})-[:MENTIONED_IN]->(n:NewsEvent)
+RETURN c.legal_name, n.event_types, n.title, n.url ORDER BY n.published_at DESC;
+```
+
+On the live data, TSMC is a supplier to 6 of the 12 filers and Samsung Electronics to 3.
+
 ## Development
 
 ```powershell
@@ -125,7 +176,7 @@ Neo4j service container on every push and PR.
 - [x] **M1 — Ingestion & graph:** GLEIF + OpenSanctions → DuckDB → quality checks → Neo4j
 - [x] **M2 — Orchestration:** Dagster assets, blocking quality gate, schedules, CI with Neo4j
 - [x] **M3 — Entity resolution:** registration-number links, fuzzy name/country matching, Claude adjudication, review queue, dev/test evaluation
-- [ ] **M4 — Filings & news:** LLM extraction of suppliers from SEC 10-Ks; GDELT disruption events
+- [x] **M4 — Filings & news:** supplier extraction from SEC 10-K/20-F (rules + Claude), GLEIF entity linking, GDELT disruption events, extraction eval
 - [ ] **M5 — Graph ML:** risk propagation, link prediction (PyTorch Geometric)
 - [ ] **M6 — Agent:** GraphRAG Q&A + audited actions, evaluated with an eval suite
 - [ ] **M7 — UI:** React + Cytoscape graph explorer and risk dashboard
@@ -135,5 +186,8 @@ Neo4j service container on every push and PR.
 
 - **GLEIF** LEI data — CC0.
 - **OpenSanctions** — CC BY-NC 4.0: free for non-commercial use; commercial use requires a license.
+- **SEC EDGAR** — public filings; follow SEC fair-access rules (≤ 10 req/s, User-Agent with a
+  contact email via `SEC_USER_AGENT`).
+- **GDELT** — free for unrestricted use with citation of the GDELT Project.
 
 Code: MIT.

@@ -93,6 +93,47 @@ CHECKS: list[Check] = [
           "Entity-resolution decisions are match / no_match / review",
           sql="SELECT count(*) FROM er_candidates "
               "WHERE decision NOT IN ('match', 'no_match', 'review')"),
+    Check("filings_accession_unique", "filings", ERROR, "One manifest row per filing",
+          sql="SELECT count(*) - count(DISTINCT accession) FROM filings"),
+    Check("mentions_method_known", "supplier_mentions", ERROR,
+          "Every supplier mention comes from a known extraction method",
+          sql="SELECT count(*) FROM supplier_mentions WHERE method NOT IN ('RULES', 'LLM')"),
+    Check("mentions_have_evidence", "supplier_mentions", ERROR,
+          "Every supplier mention quotes its evidence sentence",
+          sql="SELECT count(*) FROM supplier_mentions "
+              "WHERE evidence IS NULL OR trim(evidence) = ''"),
+    Check("mentions_resolution_rate", "supplier_mentions", WARN,
+          "At least half of the supplier names resolve to an LEI",
+          sql="SELECT CASE WHEN count(*) > 0 AND count(supplier_lei) * 2 < count(*) "
+              "THEN 1 ELSE 0 END FROM supplier_mentions"),
+    Check("supply_links_no_orphans", "supply_links", ERROR,
+          "Both ends of every supplier link are known companies",
+          sql="""SELECT count(*) FROM supply_links l
+                 LEFT JOIN companies s ON l.supplier_lei = s.lei
+                 LEFT JOIN companies c ON l.customer_lei = c.lei
+                 WHERE s.lei IS NULL OR c.lei IS NULL"""),
+    Check("supply_links_no_self_loops", "supply_links", ERROR, "No company supplies itself",
+          sql="SELECT count(*) FROM supply_links WHERE supplier_lei = customer_lei"),
+    Check("supply_links_type_follows_method", "supply_links", ERROR,
+          "LLM links are SUPPLIES, rule links are POSSIBLE_SUPPLIER (ontology v0.3)",
+          sql="""SELECT count(*) FROM supply_links WHERE link_type IS NULL
+                 OR (extraction_method = 'LLM' AND link_type <> 'SUPPLIES')
+                 OR (extraction_method = 'RULES' AND link_type <> 'POSSIBLE_SUPPLIER')"""),
+    Check("supply_links_have_evidence", "supply_links", ERROR,
+          "Every supplier link quotes its evidence sentence",
+          sql="SELECT count(*) FROM supply_links WHERE evidence IS NULL OR trim(evidence) = ''"),
+    Check("news_events_typed", "news_events", ERROR,
+          "Every news event has at least one disruption event type",
+          sql="SELECT count(*) FROM news_events "
+              "WHERE event_types IS NULL OR len(event_types) = 0"),
+    Check("news_id_unique", "news_events", ERROR, "GDELT record ids are unique",
+          sql="SELECT count(*) - count(DISTINCT id) FROM news_events"),
+    Check("company_news_references_valid", "company_news", ERROR,
+          "News links point from watchlist companies to existing events",
+          sql="""SELECT count(*) FROM company_news n
+                 LEFT JOIN watchlist w ON n.lei = w.lei
+                 LEFT JOIN news_events e ON n.event_id = e.id
+                 WHERE w.lei IS NULL OR e.id IS NULL"""),
 ]
 
 

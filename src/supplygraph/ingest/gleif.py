@@ -158,6 +158,13 @@ class GleifClient:
         })
         return body["data"] if body else []
 
+    def search_fulltext(self, query: str, page_size: int = 20) -> list[dict]:
+        """Name search across legal and other names (incl. English names of entities whose
+        legal name is in a native script, e.g. 삼성전자(주) / SAMSUNG ELECTRONICS CO., LTD).
+        Results are loose: callers must verify the name themselves."""
+        body = self._get("/lei-records", {"filter[fulltext]": query, "page[size]": page_size})
+        return body["data"] if body else []
+
     def get_records(self, leis: list[str], chunk_size: int = 100) -> list[dict]:
         """Batch lookup: one request per `chunk_size` LEIs instead of one per LEI."""
         records: list[dict] = []

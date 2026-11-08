@@ -1,8 +1,9 @@
 """Dagster software-defined assets for the SupplyGraph pipeline.
 
-    gleif_raw ──┐
-                ├─► warehouse ─[quality_gate]─► entity_resolution ─[match_gate]─► neo4j_graph
-    sanctions_raw┘                (blocking)                          (blocking)
+    gleif_raw ─────────────────────┐
+    sanctions_raw ─────────────────┤
+    sec_filings ─► supplier_extraction ─┼─► warehouse ─[quality_gate]─► entity_resolution
+    news_raw ──────────────────────┘                                   ─[match_gate]─► neo4j_graph
 
 Run locally from the repo root:  dagster dev   (UI at http://localhost:3000)
 """
@@ -39,8 +40,11 @@ class SupplyGraphResource(ConfigurableResource):
     (tests point `data_dir` at a temp folder and `neo4j_uri` at a dead port)."""
 
     seeds_path: str = "seeds/companies.csv"
+    filers_path: str = "seeds/sec_filers.csv"
     children_per_seed: int = 25
     use_llm: bool = False  # Claude adjudicates the ER review band (needs Anthropic credentials)
+    extraction_method: str = "rules"  # "llm" -> SUPPLIES links (needs Anthropic credentials)
+    news_hours: float = 24
     data_dir: str | None = None
     neo4j_uri: str | None = None
 
@@ -74,8 +78,39 @@ def sanctions_raw(sg: SupplyGraphResource) -> MaterializeResult:
     })
 
 
-@asset(deps=[gleif_raw, sanctions_raw], group_name="warehouse", kinds={"duckdb"},
-       description="Companies, ownership, sanctions and LEI matches in DuckDB.")
+@asset(group_name="ingestion", kinds={"python"}, retry_policy=NETWORK_RETRY,
+       description="Latest 10-K / 20-F of each SEC filer (raw HTML + manifest). Skipped, "
+                   "not failed, when SEC_USER_AGENT is not configured.")
+def sec_filings(sg: SupplyGraphResource) -> MaterializeResult:
+    settings = sg.settings()
+    if not settings.sec_user_agent:
+        return MaterializeResult(metadata={"skipped": "SEC_USER_AGENT not set"})
+    refs = pipeline.ingest_filings(settings, Path(sg.filers_path))
+    return MaterializeResult(metadata={
+        "filings": len(refs),
+        "forms": MetadataValue.json({r.entity_name: f"{r.form} {r.filing_date}" for r in refs}),
+    })
+
+
+@asset(deps=[sec_filings], group_name="ingestion", kinds={"python"}, retry_policy=NETWORK_RETRY,
+       description="Supplier mentions extracted from filings, resolved to LEIs via GLEIF.")
+def supplier_extraction(sg: SupplyGraphResource) -> MaterializeResult:
+    settings = sg.settings()
+    if not (settings.sec_dir / "filings.jsonl").exists():
+        return MaterializeResult(metadata={"skipped": "no filings ingested"})
+    return MaterializeResult(metadata=dict(
+        pipeline.extract_suppliers(settings, sg.extraction_method)))
+
+
+@asset(group_name="ingestion", kinds={"python"}, retry_policy=NETWORK_RETRY,
+       description="GDELT GKG articles tagged with disruption themes (raw JSONL).")
+def news_raw(sg: SupplyGraphResource) -> MaterializeResult:
+    return MaterializeResult(metadata=dict(pipeline.ingest_news(sg.settings(), sg.news_hours)))
+
+
+@asset(deps=[gleif_raw, sanctions_raw, supplier_extraction, news_raw], group_name="warehouse",
+       kinds={"duckdb"},
+       description="Companies, ownership, sanctions, LEI matches, supplier links and news.")
 def warehouse(sg: SupplyGraphResource) -> MaterializeResult:
     return MaterializeResult(metadata=dict(pipeline.build(sg.settings())))
 
@@ -121,7 +156,8 @@ def neo4j_graph(sg: SupplyGraphResource) -> MaterializeResult:
     return MaterializeResult(metadata=dict(pipeline.load_graph(sg.settings())))
 
 
-ALL_ASSETS = [gleif_raw, sanctions_raw, warehouse, entity_resolution, neo4j_graph]
+ALL_ASSETS = [gleif_raw, sanctions_raw, sec_filings, supplier_extraction, news_raw, warehouse,
+              entity_resolution, neo4j_graph]
 ALL_CHECKS = [quality_gate, match_gate]
 
 full_refresh_job = define_asset_job(
@@ -133,11 +169,18 @@ sanctions_refresh_job = define_asset_job(
     description="Sanctions change daily, ownership rarely: refresh only what depends on them.",
 )
 
+news_refresh_job = define_asset_job(
+    "news_refresh", selection=AssetSelection.assets(news_raw).downstream(),
+    description="Disruption news moves fastest: refresh it and everything downstream.",
+)
+
 defs = Definitions(
     assets=ALL_ASSETS,
     asset_checks=ALL_CHECKS,
-    jobs=[full_refresh_job, sanctions_refresh_job],
+    jobs=[full_refresh_job, sanctions_refresh_job, news_refresh_job],
     schedules=[
+        ScheduleDefinition(job=news_refresh_job, cron_schedule="30 */6 * * *",
+                           execution_timezone="UTC"),
         ScheduleDefinition(job=sanctions_refresh_job, cron_schedule="0 6 * * *",
                            execution_timezone="UTC"),
         ScheduleDefinition(job=full_refresh_job, cron_schedule="0 5 * * 1",

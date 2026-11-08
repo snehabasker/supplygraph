@@ -15,6 +15,7 @@ from supplygraph.config import load_settings
 app = typer.Typer(help="SupplyGraph: supplier risk knowledge graph pipeline.", no_args_is_help=True)
 
 DEFAULT_SEEDS = Path("seeds/companies.csv")
+DEFAULT_FILERS = Path("seeds/sec_filers.csv")
 DEFAULT_EVAL_DIR = Path("eval")
 
 
@@ -51,6 +52,70 @@ def ingest_gleif(
 def ingest_sanctions() -> None:
     """Download the OpenSanctions consolidated sanctions list."""
     typer.echo(f"OpenSanctions -> {pipeline.ingest_sanctions(load_settings())}")
+
+
+@app.command("ingest-filings")
+def ingest_filings(
+    filers: Path = typer.Option(DEFAULT_FILERS, help="CSV with lei, cik, name columns."),
+) -> None:
+    """Download each filer's latest 10-K / 20-F from SEC EDGAR (needs SEC_USER_AGENT)."""
+    settings = load_settings()
+    refs = pipeline.ingest_filings(settings, filers)
+    for ref in refs:
+        typer.echo(f"{ref.form:<6}{ref.filing_date}  {ref.entity_name}")
+    typer.echo(f"SEC: {len(refs)} filings -> {settings.sec_dir}")
+
+
+@app.command("extract-suppliers")
+def extract_suppliers(
+    method: str = typer.Option("rules", help="rules (baseline, -> POSSIBLE_SUPPLIER) or "
+                                             "llm (Claude, -> SUPPLIES)."),
+) -> None:
+    """Extract supplier relationships from the ingested filings and resolve them to LEIs."""
+    counts = pipeline.extract_suppliers(load_settings(), method)
+    for key, n in counts.items():
+        typer.echo(f"{key:<20}{n:>8}")
+    if method.lower() == "rules":
+        typer.echo("Rule-based links load as POSSIBLE_SUPPLIER (0.56 precision on the gold "
+                   "set); use --method llm for SUPPLIES.")
+
+
+@app.command("ingest-news")
+def ingest_news(
+    hours: float = typer.Option(24, min=0.25, help="How far back to read GDELT (15-min files)."),
+) -> None:
+    """Fetch GDELT GKG files and keep articles tagged with disruption themes."""
+    counts = pipeline.ingest_news(load_settings(), hours)
+    typer.echo(f"GDELT: {counts}")
+
+
+@app.command("build-extraction-eval-set")
+def build_extraction_eval_set(
+    eval_dir: Path = typer.Option(DEFAULT_EVAL_DIR / "extraction"),
+) -> None:
+    """Freeze candidate passages from the ingested filings (gold.csv is hand-labelled)."""
+    n = pipeline.build_extraction_eval_set(load_settings(), eval_dir)
+    typer.echo(f"{n} passages -> {eval_dir}  (re-check gold.csv against them)")
+
+
+@app.command("evaluate-extraction")
+def evaluate_extraction(
+    eval_dir: Path = typer.Option(DEFAULT_EVAL_DIR / "extraction"),
+    llm: bool = typer.Option(False, help="Also measure the Claude extractor."),
+    out: Path = typer.Option(Path("data/extraction_eval_report.json")),
+) -> None:
+    """Supplier-extraction precision/recall on the hand-labelled gold set."""
+    report = pipeline.evaluate_extraction(load_settings(), eval_dir, use_llm=llm)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    typer.echo(f"{report['passages']} passages from {report['filers']} filings; "
+               f"{report['gold_suppliers']} gold supplier relationships")
+    typer.echo(f"\n{'system':<10}{'precision':>10}{'recall':>8}{'F1':>7}{'TP':>5}{'FP':>5}"
+               f"{'FN':>5}{'failed':>8}")
+    for name, m in report["systems"].items():
+        typer.echo(f"{name:<10}{m['precision']:>10.3f}{m['recall']:>8.3f}{m['f1']:>7.3f}"
+                   f"{m['tp']:>5}{m['fp']:>5}{m['fn']:>5}{m['failed_passages']:>8}")
+    typer.echo(f"Full report (false positives, misses) -> {out}")
 
 
 @app.command()
@@ -131,6 +196,12 @@ def run_all(
     """Ingest -> build -> check -> load graph. Stops if quality checks fail."""
     ingest_gleif(seeds=seeds, children=children, max_seeds=None)
     ingest_sanctions()
+    if load_settings().sec_user_agent:
+        ingest_filings(filers=DEFAULT_FILERS)
+        extract_suppliers(method="rules")
+    else:
+        typer.echo("SEC_USER_AGENT not set: skipping filings and supplier extraction.", err=True)
+    ingest_news(hours=24)
     build()
     resolve(llm=False)
     check()

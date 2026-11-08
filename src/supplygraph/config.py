@@ -22,6 +22,8 @@ class Settings:
     opensanctions_url: str
     gleif_base_url: str = "https://api.gleif.org/api/v1"
     user_agent: str = "supplygraph/0.1"
+    # SEC requires a User-Agent with a contact email; unset means SEC ingestion is unavailable.
+    sec_user_agent: str | None = None
 
     @property
     def raw_dir(self) -> Path:
@@ -30,6 +32,19 @@ class Settings:
     @property
     def gleif_dir(self) -> Path:
         return self.raw_dir / "gleif"
+
+    @property
+    def supplier_gleif_dir(self) -> Path:
+        """GLEIF records of suppliers found in filings (and their parents)."""
+        return self.gleif_dir / "suppliers"
+
+    @property
+    def sec_dir(self) -> Path:
+        return self.raw_dir / "sec"
+
+    @property
+    def gdelt_dir(self) -> Path:
+        return self.raw_dir / "gdelt"
 
     @property
     def sanctions_csv(self) -> Path:
@@ -48,4 +63,5 @@ def load_settings() -> Settings:
         neo4j_user=os.getenv("NEO4J_USER", "neo4j"),
         neo4j_password=os.getenv("NEO4J_PASSWORD", "change-me-please"),
         opensanctions_url=os.getenv("OPENSANCTIONS_URL", DEFAULT_OPENSANCTIONS_URL),
+        sec_user_agent=os.getenv("SEC_USER_AGENT") or None,
     )
