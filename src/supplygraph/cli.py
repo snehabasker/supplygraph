@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import sys
 from pathlib import Path
@@ -14,6 +15,7 @@ from supplygraph.config import load_settings
 app = typer.Typer(help="SupplyGraph: supplier risk knowledge graph pipeline.", no_args_is_help=True)
 
 DEFAULT_SEEDS = Path("seeds/companies.csv")
+DEFAULT_EVAL_DIR = Path("eval")
 
 
 @app.callback()
@@ -59,6 +61,48 @@ def build() -> None:
 
 
 @app.command()
+def resolve(
+    llm: bool = typer.Option(False, help="Ask Claude to adjudicate the review band."),
+) -> None:
+    """Fuzzy-match companies to sanctions records (after `build`)."""
+    for key, n in pipeline.resolve_entities(load_settings(), use_llm=llm).items():
+        typer.echo(f"{key:<18}{n:>8}")
+
+
+@app.command("build-eval-set")
+def build_eval_set(eval_dir: Path = typer.Option(DEFAULT_EVAL_DIR)) -> None:
+    """Rebuild the entity-resolution gold set from live GLEIF + current sanctions data."""
+    counts = pipeline.build_eval_set(load_settings(), eval_dir)
+    typer.echo(f"Eval set -> {eval_dir}: {counts}")
+
+
+@app.command("evaluate-er")
+def evaluate_er(
+    eval_dir: Path = typer.Option(DEFAULT_EVAL_DIR),
+    llm: bool = typer.Option(False, help="Also measure the hybrid matcher + Claude system."),
+    out: Path = typer.Option(Path("data/er_eval_report.json"), help="Full JSON report."),
+) -> None:
+    """Measure entity-resolution precision/recall on the gold set (dev-tuned, test-reported)."""
+    report = pipeline.evaluate_entities(load_settings(), eval_dir, use_llm=llm)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    t = report["chosen_thresholds_on_dev"]
+    typer.echo(f"Companies: {report['companies']}   blocking recall: {report['blocking_recall']}")
+    typer.echo(f"Thresholds (chosen on dev): auto_match={t['auto_match']} review={t['review']}")
+    typer.echo(f"\n{'TEST':<34}{'precision':>10}{'recall':>8}{'F1':>7}{'false alarm':>13}")
+    rows = {**{k: v for k, v in report["test"].items() if "precision" in v},
+            **{f"ablation: {k}": v for k, v in report["test_ablations_at_auto_threshold"].items()}}
+    for name, m in rows.items():
+        typer.echo(f"{name:<34}{m['precision']:>10.3f}{m['recall']:>8.3f}{m['f1']:>7.3f}"
+                   f"{m['false_alarm_rate']:>13.3%}")
+    queue = report["test"]["review_queue"]
+    typer.echo(f"\nReview queue (test): {queue['size']} items, "
+               f"{queue['true_matches_in_queue']} true matches")
+    typer.echo(f"Full report -> {out}")
+
+
+@app.command()
 def check() -> None:
     """Run data quality checks. Exits with code 1 if any error-level check fails."""
     results = pipeline.check(load_settings())
@@ -88,6 +132,7 @@ def run_all(
     ingest_gleif(seeds=seeds, children=children, max_seeds=None)
     ingest_sanctions()
     build()
+    resolve(llm=False)
     check()
     if not skip_graph:
         load_graph(batch_size=1000)

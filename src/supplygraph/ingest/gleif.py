@@ -40,9 +40,19 @@ def parse_record(raw: dict) -> dict:
     registration = attrs.get("registration") or {}
     legal_address = entity.get("legalAddress") or {}
     hq_address = entity.get("headquartersAddress") or {}
+    other_names = [
+        n["name"]
+        for key in ("otherNames", "transliteratedOtherNames")
+        for n in (entity.get(key) or [])
+        if isinstance(n, dict) and n.get("name")
+    ]
     return {
         "lei": attrs.get("lei") or raw.get("id"),
         "legal_name": (entity.get("legalName") or {}).get("name"),
+        # ';'-joined, matching the OpenSanctions convention. Used by entity resolution.
+        "other_names": ";".join(dict.fromkeys(other_names)) or None,
+        # Local business-register number (e.g. Russian OGRN, UK company number).
+        "registered_as": entity.get("registeredAs"),
         "jurisdiction": entity.get("jurisdiction"),
         "legal_country": legal_address.get("country"),
         "legal_city": legal_address.get("city"),
@@ -53,6 +63,29 @@ def parse_record(raw: dict) -> dict:
         "entity_status": entity.get("status"),
         "registration_status": registration.get("status"),
         "last_update": registration.get("lastUpdateDate"),
+    }
+
+
+_ENTITY_FIELDS = ("legalName", "otherNames", "transliteratedOtherNames", "jurisdiction",
+                  "category", "legalForm", "status", "registeredAs")
+
+
+def compact_record(raw: dict) -> dict:
+    """Keep only what `parse_record` reads (for committed fixtures / eval sets)."""
+    attrs = raw.get("attributes") or {}
+    entity = attrs.get("entity") or {}
+    registration = attrs.get("registration") or {}
+    compact_entity = {k: entity[k] for k in _ENTITY_FIELDS if entity.get(k)}
+    for key in ("legalAddress", "headquartersAddress"):
+        address = entity.get(key) or {}
+        compact_entity[key] = {k: address.get(k) for k in ("city", "country")}
+    return {
+        "id": raw.get("id"),
+        "attributes": {
+            "lei": attrs.get("lei"),
+            "entity": compact_entity,
+            "registration": {k: registration.get(k) for k in ("status", "lastUpdateDate")},
+        },
     }
 
 
@@ -115,6 +148,25 @@ class GleifClient:
             return []
         body = self._get(f"/lei-records/{lei}/direct-children", {"page[size]": min(limit, 200)})
         return body["data"] if body else []
+
+    def list_by_country(self, country: str, page: int, page_size: int = 100) -> list[dict]:
+        """One page of entities whose legal address is in `country` (ISO alpha-2)."""
+        body = self._get("/lei-records", {
+            "filter[entity.legalAddress.country]": country,
+            "page[size]": page_size,
+            "page[number]": page,
+        })
+        return body["data"] if body else []
+
+    def get_records(self, leis: list[str], chunk_size: int = 100) -> list[dict]:
+        """Batch lookup: one request per `chunk_size` LEIs instead of one per LEI."""
+        records: list[dict] = []
+        for i in range(0, len(leis), chunk_size):
+            chunk = leis[i : i + chunk_size]
+            body = self._get("/lei-records",
+                             {"filter[lei]": ",".join(chunk), "page[size]": len(chunk)})
+            records.extend(body["data"] if body else [])
+        return records
 
 
 @dataclass

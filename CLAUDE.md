@@ -15,6 +15,14 @@
 3. If the change touches ingestion, warehouse or graph: run it against real data and show the counts.
 4. Every bug fixed gets a regression test that fails without the fix.
 
+## Entity resolution
+- Any change to `er/` (normalization, scoring, thresholds) must be followed by `supplygraph evaluate-er`;
+  report the test-split precision / recall / false-alarm deltas. Never tune thresholds on the test split.
+- When metrics move, read the listed false alarms and misses before concluding — label noise is real
+  (see docs/entity-resolution.md).
+- Claude code: model from `SUPPLYGRAPH_LLM_MODEL` (default `claude-opus-5-5`); structured output via
+  `client.beta.messages.parse`; failures go to review, never to a silent decision.
+
 ## Rules
 - `docs/ontology.md` is the contract. Changing an object/link type means updating it first.
 - All pipeline steps must be idempotent (CREATE OR REPLACE in DuckDB, MERGE in Neo4j).

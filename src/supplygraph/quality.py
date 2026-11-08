@@ -69,6 +69,30 @@ CHECKS: list[Check] = [
     Check("sanctions_fresh", "sanctions", WARN, "Sanctions data seen within the last 7 days",
           sql="SELECT CASE WHEN max(TRY_CAST(last_seen AS TIMESTAMP)) "
               ">= now()::TIMESTAMP - INTERVAL 7 DAY THEN 0 ELSE 1 END FROM sanctions"),
+    Check("matches_method_known", "company_sanction_matches", ERROR,
+          "Every match has a known match_method",
+          sql="SELECT count(*) FROM company_sanction_matches WHERE match_method NOT IN "
+              "('LEI_IDENTIFIER', 'REGISTRATION_NUMBER', 'FUZZY_NAME', 'LLM_ADJUDICATED')"),
+    Check("matches_confidence_rule", "company_sanction_matches", ERROR,
+          "Identifier matches have confidence 1.0; name-based matches < 1.0",
+          sql="""SELECT count(*) FROM company_sanction_matches WHERE
+                 (match_method IN ('LEI_IDENTIFIER', 'REGISTRATION_NUMBER') AND confidence <> 1.0)
+                 OR (match_method IN ('FUZZY_NAME', 'LLM_ADJUDICATED')
+                     AND NOT (confidence > 0 AND confidence < 1.0))"""),
+    Check("matches_have_evidence", "company_sanction_matches", ERROR,
+          "Every match records its evidence (auditability)",
+          sql="SELECT count(*) FROM company_sanction_matches WHERE evidence IS NULL "
+              "OR NOT json_valid(evidence)"),
+    Check("matches_reference_known_entities", "company_sanction_matches", ERROR,
+          "Matches point at existing companies and sanctions records",
+          sql="""SELECT count(*) FROM company_sanction_matches m
+                 LEFT JOIN companies c ON m.lei = c.lei
+                 LEFT JOIN sanctions s ON m.sanction_id = s.id
+                 WHERE c.lei IS NULL OR s.id IS NULL"""),
+    Check("er_decisions_valid", "er_candidates", ERROR,
+          "Entity-resolution decisions are match / no_match / review",
+          sql="SELECT count(*) FROM er_candidates "
+              "WHERE decision NOT IN ('match', 'no_match', 'review')"),
 ]
 
 

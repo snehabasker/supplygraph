@@ -15,6 +15,7 @@ dependencies = [
     "neo4j>=5.20,<6",
     "typer>=0.12,<1",
     "python-dotenv>=1.0,<2",
+    "rapidfuzz>=3.9,<4",
 ]
 
 [project.optional-dependencies]
@@ -22,8 +23,11 @@ orchestration = [
     "dagster>=1.9,<2",
     "dagster-webserver>=1.9,<2",
 ]
+llm = [
+    "anthropic>=1.17,<2",
+]
 dev = [
-    "supplygraph[orchestration]",
+    "supplygraph[orchestration,llm]",
     "pytest>=8.0",
     "pytest-cov>=5.0",
     "ruff>=0.6",
@@ -49,6 +53,11 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+# Cyrillic text is the point here (transliteration tables, Russian company-name fixtures).
+"src/supplygraph/er/normalize.py" = ["RUF001"]
+"tests/test_er.py" = ["RUF001"]
 
 [tool.ruff.lint.flake8-bugbear]
 # Typer declares CLI options via default values; that's the intended API.

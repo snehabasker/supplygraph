@@ -1,8 +1,8 @@
 """Dagster software-defined assets for the SupplyGraph pipeline.
 
     gleif_raw ──┐
-                ├─► warehouse ──[quality_gate: blocking]──► neo4j_graph
-    sanctions_raw┘
+                ├─► warehouse ─[quality_gate]─► entity_resolution ─[match_gate]─► neo4j_graph
+    sanctions_raw┘                (blocking)                          (blocking)
 
 Run locally from the repo root:  dagster dev   (UI at http://localhost:3000)
 """
@@ -40,6 +40,7 @@ class SupplyGraphResource(ConfigurableResource):
 
     seeds_path: str = "seeds/companies.csv"
     children_per_seed: int = 25
+    use_llm: bool = False  # Claude adjudicates the ER review band (needs Anthropic credentials)
     data_dir: str | None = None
     neo4j_uri: str | None = None
 
@@ -79,9 +80,7 @@ def warehouse(sg: SupplyGraphResource) -> MaterializeResult:
     return MaterializeResult(metadata=dict(pipeline.build(sg.settings())))
 
 
-@asset_check(asset=warehouse, blocking=True,
-             description="All error-level data quality checks pass; blocks the graph load if not.")
-def quality_gate(sg: SupplyGraphResource) -> AssetCheckResult:
+def _gate(sg: SupplyGraphResource) -> AssetCheckResult:
     results = pipeline.check(sg.settings())
     failing = [r for r in results if r.status == "fail"]
     return AssetCheckResult(
@@ -97,13 +96,33 @@ def quality_gate(sg: SupplyGraphResource) -> AssetCheckResult:
     )
 
 
-@asset(deps=[warehouse], group_name="graph", kinds={"neo4j"}, retry_policy=NETWORK_RETRY,
+@asset_check(asset=warehouse, blocking=True,
+             description="All error-level data quality checks pass before entity resolution.")
+def quality_gate(sg: SupplyGraphResource) -> AssetCheckResult:
+    return _gate(sg)
+
+
+@asset(deps=[warehouse], group_name="warehouse", kinds={"python", "duckdb"},
+       description="Fuzzy company<->sanctions matching; optional Claude adjudication; "
+                   "borderline cases go to a review queue.")
+def entity_resolution(sg: SupplyGraphResource) -> MaterializeResult:
+    return MaterializeResult(metadata=dict(pipeline.resolve_entities(sg.settings(), sg.use_llm)))
+
+
+@asset_check(asset=entity_resolution, blocking=True,
+             description="Match invariants hold (methods, confidence rule, evidence, references).")
+def match_gate(sg: SupplyGraphResource) -> AssetCheckResult:
+    return _gate(sg)
+
+
+@asset(deps=[entity_resolution], group_name="graph", kinds={"neo4j"}, retry_policy=NETWORK_RETRY,
        description="Ontology-shaped knowledge graph in Neo4j (idempotent MERGE).")
 def neo4j_graph(sg: SupplyGraphResource) -> MaterializeResult:
     return MaterializeResult(metadata=dict(pipeline.load_graph(sg.settings())))
 
 
-ALL_ASSETS = [gleif_raw, sanctions_raw, warehouse, neo4j_graph]
+ALL_ASSETS = [gleif_raw, sanctions_raw, warehouse, entity_resolution, neo4j_graph]
+ALL_CHECKS = [quality_gate, match_gate]
 
 full_refresh_job = define_asset_job(
     "full_refresh", selection=AssetSelection.all(),
@@ -116,7 +135,7 @@ sanctions_refresh_job = define_asset_job(
 
 defs = Definitions(
     assets=ALL_ASSETS,
-    asset_checks=[quality_gate],
+    asset_checks=ALL_CHECKS,
     jobs=[full_refresh_job, sanctions_refresh_job],
     schedules=[
         ScheduleDefinition(job=sanctions_refresh_job, cron_schedule="0 6 * * *",

@@ -54,12 +54,13 @@ dagster dev                                     # UI at http://localhost:3000
 
 ```
 gleif_raw ──┐
-            ├─► warehouse ──[quality_gate: blocking]──► neo4j_graph
+            ├─► warehouse ─[quality_gate]─► entity_resolution ─[match_gate]─► neo4j_graph
 sanctions_raw┘
 ```
 
-- **`quality_gate`** is a *blocking* asset check: if any error-level check fails, `neo4j_graph`
-  is not materialized, so bad data never reaches the graph.
+- **`quality_gate`** and **`match_gate`** are *blocking* asset checks: if any error-level check
+  fails, nothing downstream is materialized, so bad data never reaches the graph.
+- Set `use_llm: true` on the `sg` resource to let Claude adjudicate the review band.
 - **Jobs:** `full_refresh` (weekly, Mon 05:00 UTC) and `sanctions_refresh` (daily 06:00 UTC —
   sanctions change daily, ownership rarely, so only sanctions and its downstream assets rerun).
 - Network assets retry twice with exponential backoff.
@@ -81,6 +82,31 @@ MATCH (child:Company)-[:OWNED_BY]->(parent:Company)-[:SANCTIONED_AS]->(s)
 RETURN child.legal_name, child.legal_country, parent.legal_name, s.program_ids;
 ```
 
+## Entity resolution
+
+Most sanctions records carry no identifier linking them to a company register, so SupplyGraph
+matches on names and countries across scripts and legal-form conventions:
+
+```powershell
+supplygraph resolve            # fuzzy matching; borderline cases -> review queue
+supplygraph resolve --llm      # Claude adjudicates the review band (needs Anthropic credentials)
+supplygraph evaluate-er        # precision/recall on the committed gold set
+```
+
+| Test split (125 sanctioned, 318 clean companies) | Precision | Recall | False alarms |
+|---|---:|---:|---:|
+| Production (auto-match) | **0.969** | **0.760** | **0.63 %** |
+
+Labels come from identifiers (LEI or registration number), never from names; thresholds are
+tuned on a separate dev split. Ablations, the review-queue analysis, what went wrong in the first
+evaluation, and known limitations are in [docs/entity-resolution.md](docs/entity-resolution.md).
+
+```cypher
+// Analyst review queue: candidates the matcher would not auto-approve
+MATCH (c:Company)-[p:POSSIBLE_SANCTIONS_MATCH]->(s:SanctionedEntity)
+RETURN c.legal_name, s.name, p.score, p.country_relation ORDER BY p.score DESC;
+```
+
 ## Development
 
 ```powershell
@@ -98,7 +124,7 @@ Neo4j service container on every push and PR.
 
 - [x] **M1 — Ingestion & graph:** GLEIF + OpenSanctions → DuckDB → quality checks → Neo4j
 - [x] **M2 — Orchestration:** Dagster assets, blocking quality gate, schedules, CI with Neo4j
-- [ ] **M3 — Entity resolution:** fuzzy name/country matching + LLM adjudication, precision/recall eval
+- [x] **M3 — Entity resolution:** registration-number links, fuzzy name/country matching, Claude adjudication, review queue, dev/test evaluation
 - [ ] **M4 — Filings & news:** LLM extraction of suppliers from SEC 10-Ks; GDELT disruption events
 - [ ] **M5 — Graph ML:** risk propagation, link prediction (PyTorch Geometric)
 - [ ] **M6 — Agent:** GraphRAG Q&A + audited actions, evaluated with an eval suite

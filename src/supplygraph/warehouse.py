@@ -16,13 +16,17 @@ from supplygraph.ingest.gleif import parse_record
 log = logging.getLogger(__name__)
 
 COMPANY_COLUMNS = [
-    "lei", "legal_name", "jurisdiction", "legal_country", "legal_city", "hq_country",
-    "hq_city", "category", "legal_form_id", "entity_status", "registration_status",
-    "last_update",
+    "lei", "legal_name", "other_names", "registered_as", "jurisdiction", "legal_country",
+    "legal_city", "hq_country", "hq_city", "category", "legal_form_id", "entity_status",
+    "registration_status", "last_update",
 ]
 
 # Sanctions entity types that can plausibly be the same real-world thing as a company.
 ORG_SCHEMAS = ("Company", "Organization", "LegalEntity")
+
+# Identifier-based match methods: deterministic, confidence 1.0.
+IDENTIFIER_METHODS = ("LEI_IDENTIFIER", "REGISTRATION_NUMBER")
+MIN_REGISTRATION_NUMBER_LENGTH = 6
 
 
 def connect(path: Path | str) -> duckdb.DuckDBPyConnection:
@@ -44,16 +48,16 @@ def _read_jsonl(path: Path) -> list[dict]:
         return [json.loads(line) for line in fh if line.strip()]
 
 
+def company_rows(records: list[dict]) -> list[list]:
+    return [[parse_record(r)[c] for c in COMPANY_COLUMNS] + ["GLEIF"] for r in records]
+
+
 def build_gleif(con: duckdb.DuckDBPyConnection, gleif_dir: Path) -> tuple[int, int]:
     records = _read_jsonl(gleif_dir / "records.jsonl")
     rels = _read_jsonl(gleif_dir / "relationships.jsonl")
 
-    cols_sql = ", ".join(f"{c} VARCHAR" for c in COMPANY_COLUMNS)
-    con.execute(f"CREATE OR REPLACE TABLE companies ({cols_sql}, source VARCHAR)")
-    rows = [[parse_record(r)[c] for c in COMPANY_COLUMNS] + ["GLEIF"] for r in records]
-    if rows:
-        placeholders = ", ".join("?" * (len(COMPANY_COLUMNS) + 1))
-        con.executemany(f"INSERT INTO companies VALUES ({placeholders})", rows)
+    rows = company_rows(records)
+    create_companies_table(con, "companies", rows)
 
     con.execute(
         "CREATE OR REPLACE TABLE ownership "
@@ -84,26 +88,65 @@ def build_sanctions(con: duckdb.DuckDBPyConnection, csv_path: Path) -> int:
     return count
 
 
-def build_matches(con: duckdb.DuckDBPyConnection) -> int:
-    """Deterministic, zero-false-positive linking: a sanctions record that lists a
-    company's LEI among its identifiers. (Fuzzy entity resolution comes in Milestone 3.)"""
-    con.execute("""
-        CREATE OR REPLACE TABLE company_sanction_matches AS
+def build_matches(
+    con: duckdb.DuckDBPyConnection,
+    companies_table: str = "companies",
+    out_table: str = "company_sanction_matches",
+    temp: bool = False,
+) -> int:
+    """Deterministic identifier linking: a sanctions record that lists the company's LEI, or
+    its local registration number in the same country. Fuzzy name matching lives in `er/`.
+
+    `companies_table` / `out_table` let the ER evaluation label its gold set with exactly the
+    same logic (table names are internal constants, never user input)."""
+    kind = "TEMP TABLE" if temp else "TABLE"
+    con.execute(f"""
+        CREATE OR REPLACE {kind} {out_table} AS
         WITH ids AS (
-            SELECT id AS sanction_id, trim(unnest(string_split(identifiers, ';'))) AS identifier
+            SELECT id AS sanction_id,
+                   string_split(lower(coalesce(countries, '')), ';') AS countries,
+                   trim(unnest(string_split(identifiers, ';'))) AS identifier
             FROM sanctions
             WHERE identifiers IS NOT NULL AND identifiers <> ''
+        ),
+        by_lei AS (
+            SELECT c.lei, ids.sanction_id, 'LEI_IDENTIFIER' AS match_method,
+                   json_object('lei', c.lei)::VARCHAR AS evidence
+            FROM {companies_table} c JOIN ids ON ids.identifier = c.lei
+        ),
+        -- Registration numbers are only unique within a country, so the countries must agree,
+        -- and very short numbers are ignored to avoid accidental collisions.
+        by_registration AS (
+            SELECT c.lei, ids.sanction_id, 'REGISTRATION_NUMBER' AS match_method,
+                   json_object('registered_as', c.registered_as,
+                               'country', c.legal_country)::VARCHAR AS evidence
+            FROM {companies_table} c
+            JOIN ids ON ids.identifier = c.registered_as
+            WHERE length(c.registered_as) >= {MIN_REGISTRATION_NUMBER_LENGTH}
+              AND list_contains(ids.countries, lower(c.legal_country))
         )
         -- DOUBLE, not the DECIMAL a bare 1.0 literal yields: the Neo4j driver rejects Decimal.
-        SELECT DISTINCT c.lei, ids.sanction_id, 'LEI_IDENTIFIER' AS match_method,
-               CAST(1.0 AS DOUBLE) AS confidence
-        FROM companies c
-        JOIN ids ON ids.identifier = c.lei
+        SELECT DISTINCT lei, sanction_id, match_method, CAST(1.0 AS DOUBLE) AS confidence, evidence
+        FROM by_lei
+        UNION ALL
+        SELECT DISTINCT r.lei, r.sanction_id, r.match_method, CAST(1.0 AS DOUBLE), r.evidence
+        FROM by_registration r ANTI JOIN by_lei l USING (lei, sanction_id)
     """)
-    row = con.execute("SELECT count(*) FROM company_sanction_matches").fetchone()
+    row = con.execute(f"SELECT count(*) FROM {out_table}").fetchone()
     count = row[0] if row else 0
-    log.info("company_sanction_matches=%d", count)
+    log.info("%s=%d", out_table, count)
     return count
+
+
+def create_companies_table(
+    con: duckdb.DuckDBPyConnection, name: str, rows: list[list], temp: bool = False
+) -> None:
+    kind = "TEMP TABLE" if temp else "TABLE"
+    cols_sql = ", ".join(f"{c} VARCHAR" for c in COMPANY_COLUMNS)
+    con.execute(f"CREATE OR REPLACE {kind} {name} ({cols_sql}, source VARCHAR)")
+    if rows:
+        placeholders = ", ".join("?" * (len(COMPANY_COLUMNS) + 1))
+        con.executemany(f"INSERT INTO {name} VALUES ({placeholders})", rows)
 
 
 def build_all(con: duckdb.DuckDBPyConnection, gleif_dir: Path, sanctions_csv: Path) -> dict:

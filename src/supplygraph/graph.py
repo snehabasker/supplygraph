@@ -11,7 +11,7 @@ from collections.abc import Iterator
 import duckdb
 from neo4j import Driver
 
-from supplygraph.warehouse import ORG_SCHEMAS
+from supplygraph.warehouse import ORG_SCHEMAS, table_exists
 
 log = logging.getLogger(__name__)
 
@@ -47,8 +47,26 @@ UNWIND $rows AS r
 MATCH (c:Company {lei: r.lei})
 MATCH (s:SanctionedEntity {id: r.sanction_id})
 MERGE (c)-[m:SANCTIONED_AS]->(s)
-SET m.match_method = r.match_method, m.confidence = r.confidence
+SET m.match_method = r.match_method, m.confidence = r.confidence, m.evidence = r.evidence
 """
+
+UPSERT_POSSIBLE = """
+UNWIND $rows AS r
+MATCH (c:Company {lei: r.lei})
+MATCH (s:SanctionedEntity {id: r.sanction_id})
+MERGE (c)-[p:POSSIBLE_SANCTIONS_MATCH]->(s)
+SET p.score = r.score, p.company_name = r.company_name, p.sanction_name = r.sanction_name,
+    p.country_relation = r.country_relation
+"""
+
+# The graph mirrors the warehouse: links that ER no longer supports must disappear. Pruning is
+# scoped to the companies in this load, so loading one dataset never deletes another's links.
+PRUNE_STALE = [
+    """MATCH (c:Company)-[m:SANCTIONED_AS]->(s:SanctionedEntity)
+       WHERE c.lei IN $leis AND NOT [c.lei, s.id] IN $keep DELETE m""",
+    """MATCH (c:Company)-[p:POSSIBLE_SANCTIONS_MATCH]->(s:SanctionedEntity)
+       WHERE c.lei IN $leis AND NOT [c.lei, s.id] IN $keep DELETE p""",
+]
 
 
 def fetch_dicts(con: duckdb.DuckDBPyConnection, sql: str, params: list | None = None) -> list[dict]:
@@ -85,14 +103,28 @@ def load_graph(con: duckdb.DuckDBPyConnection, driver: Driver, batch_size: int =
         list(ORG_SCHEMAS),
     )
     matches = fetch_dicts(con, "SELECT * FROM company_sanction_matches")
+    possible = []
+    if table_exists(con, "er_candidates"):
+        possible = fetch_dicts(
+            con,
+            "SELECT lei, sanction_id, score, company_name, sanction_name, country_relation "
+            "FROM er_candidates WHERE decision = 'review'",
+        )
 
     _write(driver, UPSERT_COMPANIES, companies, batch_size, "companies")
     _write(driver, UPSERT_OWNERSHIP, ownership, batch_size, "ownership edges")
     _write(driver, UPSERT_SANCTIONED, sanctioned, batch_size, "sanctioned entities")
     _write(driver, UPSERT_MATCHES, matches, batch_size, "sanction matches")
+    _write(driver, UPSERT_POSSIBLE, possible, batch_size, "possible matches (review queue)")
+    leis = [c["lei"] for c in companies]
+    driver.execute_query(PRUNE_STALE[0], leis=leis,
+                         keep=[[m["lei"], m["sanction_id"]] for m in matches])
+    driver.execute_query(PRUNE_STALE[1], leis=leis,
+                         keep=[[p["lei"], p["sanction_id"]] for p in possible])
     return {
         "companies": len(companies),
         "ownership": len(ownership),
         "sanctioned_entities": len(sanctioned),
         "sanction_matches": len(matches),
+        "possible_matches": len(possible),
     }

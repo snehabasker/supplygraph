@@ -28,7 +28,13 @@ def make_lei(prefix18: str) -> str:
     return f"{prefix18}{98 - int(digits) % 97:02d}"
 
 
-def make_record(lei: str, name: str, country: str = "US") -> dict:
+def make_record(
+    lei: str,
+    name: str,
+    country: str = "US",
+    other_names: list[str] | None = None,
+    registered_as: str | None = None,
+) -> dict:
     return {
         "type": "lei-records",
         "id": lei,
@@ -36,6 +42,10 @@ def make_record(lei: str, name: str, country: str = "US") -> dict:
             "lei": lei,
             "entity": {
                 "legalName": {"name": name, "language": "en"},
+                "otherNames": [{"name": n, "language": "en",
+                                "type": "ALTERNATIVE_LANGUAGE_LEGAL_NAME"}
+                               for n in other_names or []],
+                "registeredAs": registered_as,
                 "legalAddress": {"city": "Somewhere", "country": country},
                 "headquartersAddress": {"city": "Somewhere", "country": country},
                 "jurisdiction": country,
