@@ -441,4 +441,5 @@ class GraphTools:
                 "companies_affected": len(impacted), "impacted": [
                     {"ref": f"lei:{r['lei']}", "name": r["name"], "risk_before": r["before"],
                      "risk_after": r["after"], "increase": r["delta"], "path": r["path"],
-                     "relations": r["relations"]} for r in impacted[:limit]]}
+                     "path_leis": r["path_leis"], "relations": r["relations"]}
+                    for r in impacted[:limit]]}

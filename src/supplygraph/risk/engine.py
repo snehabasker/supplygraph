@@ -297,7 +297,8 @@ def scenario(con: duckdb.DuckDBPyConnection, lei: str, severity: float = 1.0,
         via = next(c for c in shocked.contributions[target] if c.signal == shock)
         out.append({"lei": target, "name": names.get(target), "before": round(base.scores
                     .get(target, 0.0), 4), "after": round(s, 4), "delta": round(delta, 4),
-                    "path": [names.get(x, x) for x in via.path], "relations": list(via.relations)})
+                    "path": [names.get(x, x) for x in via.path], "path_leis": list(via.path),
+                    "relations": list(via.relations)})
     return sorted(out, key=lambda r: -r["delta"])
 
 

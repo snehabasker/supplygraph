@@ -6,6 +6,8 @@
 - Pipeline: `.\.venv\Scripts\supplygraph.exe <ingest-gleif|ingest-sanctions|ingest-filings|extract-suppliers|ingest-news|build|resolve|score-risk|scenario|check|load-graph|run-all>`
 - Integration tests: set `$env:SUPPLYGRAPH_INTEGRATION="1"` (Neo4j must be up); they only touch `TESTSG*` LEIs / `TEST-*` ids
 - Dagster: `dagster definitions validate -m supplygraph.orchestration.definitions`; `dagster dev` for the UI
+- Explorer UI: `cd web; npm test; npm run build` (typecheck + build), then `supplygraph serve`;
+  API tests in `tests/test_api.py` run on the committed agent-eval fixture
 - Pipeline logic lives in `pipeline.py`; CLI and Dagster assets are thin wrappers — never duplicate logic.
 - Neo4j: `docker compose up -d --wait`; queries via `docker exec -i supplygraph-neo4j cypher-shell` (pipe from bash, not PowerShell — PowerShell adds a BOM)
 
@@ -50,6 +52,13 @@
   the fixture and requires fixing the stale cases it lists. `planted.json` holds synthetic rows.
 - The agent only *proposes* actions; never add a tool that applies one. Approved actions are
   applied by `build` / `resolve` from `data/actions/events.jsonl` (append-only; never rewrite it).
+
+## Explorer UI
+- The API (`api/`) is read-only except analyst decisions, which go through `ActionStore.decide`
+  (same audit log as the CLI). Company data comes from the agent's `GraphTools` — don't fork
+  queries between UI and agent.
+- Charts follow the data-viz rules: one sequential hue for risk, status colors only with a label,
+  link type never by color alone. Look at a screenshot after UI changes.
 
 ## Rules
 - `docs/ontology.md` is the contract. Changing an object/link type means updating it first.

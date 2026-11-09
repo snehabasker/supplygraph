@@ -374,6 +374,25 @@ def evaluate_agent(
 
 
 @app.command()
+def serve(
+    host: str = typer.Option("127.0.0.1", help="Keep on localhost: the API has no auth."),
+    port: int = typer.Option(8000),
+    static: Path = typer.Option(Path("web/dist"), help="Built UI (cd web; npm run build)."),
+) -> None:
+    """Serve the explorer UI and its read API (graph explorer, risk dashboard, actions)."""
+    import uvicorn
+
+    from supplygraph.api.app import app_for_settings
+
+    if not (static / "index.html").exists():
+        typer.echo(f"No built UI in {static}: serving the API only (docs at /docs). "
+                   "Build it with: cd web; npm install; npm run build", err=True)
+    typer.echo(f"SupplyGraph explorer -> http://{host}:{port}")
+    uvicorn.run(app_for_settings(load_settings(), static), host=host, port=port,
+                log_level="warning")
+
+
+@app.command()
 def check() -> None:
     """Run data quality checks. Exits with code 1 if any error-level check fails."""
     results = pipeline.check(load_settings())

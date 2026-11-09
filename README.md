@@ -13,7 +13,7 @@ human-approved, audited action.
 
 ```
 GLEIF API ─────┐                                     ┌─► Neo4j knowledge graph ─► GraphRAG agent ─► audited actions
-OpenSanctions ─┤                                     │                         └─► Explorer UI (M7)
+OpenSanctions ─┤                                     │                         └─► Explorer UI (`serve`)
 SEC EDGAR ─► supplier extraction ─┼─► raw JSONL/CSV ─► DuckDB ─► DQ checks ─┤
    (10-K/20-F)  (rules | Claude)  │     (bronze)       (silver)              └─► Graph ML risk scores (M5)
 GDELT GKG ─────┘
@@ -209,11 +209,38 @@ On the live data, approving that dismissal removes the spurious possible-sanctio
 the whole ASML group (companies at risk: 24 → 7). Design, safety properties and the eval
 suite are in [docs/agent.md](docs/agent.md).
 
+## Explorer UI
+
+A React + Cytoscape front end over a small read-only API (FastAPI, reusing the agent's graph
+tools, so the UI and the agent see the same data through the same queries).
+
+```powershell
+cd web; npm install; npm run build; cd ..
+supplygraph serve                 # http://127.0.0.1:8000  (API docs at /docs)
+```
+
+- **Dashboard:** key figures, a risk-distribution histogram, the highest-risk companies with
+  their main driver, and the sanctions review queue.
+- **Explorer:** search by name, short name or LEI, then see the ownership and supplier
+  neighbourhood (1–3 hops). Node color is the risk score; sanctioned companies and review
+  candidates get a status ring; unverified `POSSIBLE_SUPPLIER` links are dashed. The side panel
+  shows risk drivers with their paths, sanctions matches, links with evidence sentences and
+  filing refs, and news. The **Disruption scenario** view draws who is hit, and how.
+- **Actions:** the agent's proposals with their evidence and the question that led to them.
+  Approve, or reject with a note; this writes to the same audit log as the CLI.
+- **Ask:** the Q&A agent with clickable citations. Needs Claude API credit; everything else
+  works without it.
+
+The server binds to localhost and has no authentication: it is a single-analyst tool. For
+frontend development, `npm run dev` in `web/` proxies `/api` to a running `supplygraph serve`.
+
 ## Development
 
 ```powershell
 pytest --cov=supplygraph     # unit + Dagster tests, no network needed
 ruff check .                 # lint
+
+cd web; npm test; npm run build  # UI unit tests, typecheck, production build
 
 # Neo4j integration tests (needs `docker compose up -d`; only touches TESTSG*/TEST-* nodes)
 $env:SUPPLYGRAPH_INTEGRATION = "1"; pytest
@@ -230,7 +257,7 @@ Neo4j service container on every push and PR.
 - [x] **M4 — Filings & news:** supplier extraction from SEC 10-K/20-F (rules + Claude), GLEIF entity linking, GDELT disruption events, extraction eval
 - [x] **M5 — Graph risk:** explainable risk propagation, disruption scenarios, weight sensitivity, supplier link-prediction benchmark (GNN deferred, see docs/risk.md)
 - [x] **M6 — Agent:** GraphRAG Q&A over graph tools with grounded citations, proposal-only audited actions applied by the pipeline, 22-case eval suite (built and tested; live eval score pending API credit, see docs/agent.md)
-- [ ] **M7 — UI:** React + Cytoscape graph explorer and risk dashboard
+- [x] **M7 — UI:** React + Cytoscape graph explorer, risk dashboard, scenario view, analyst decisions on agent proposals (`supplygraph serve`)
 - [ ] **M8 — Deploy:** Helm, observability, ADRs, demo
 
 ## Data & licensing
