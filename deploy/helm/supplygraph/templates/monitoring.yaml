@@ -1,0 +1,64 @@
+{{- if .Values.metrics.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "supplygraph.fullname" . }}
+  labels:
+    {{- include "supplygraph.labels" . | nindent 4 }}
+    {{- with .Values.metrics.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "supplygraph.selector" . | nindent 6 }}
+      app.kubernetes.io/component: api
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+{{- end }}
+{{- if .Values.metrics.prometheusRule.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "supplygraph.fullname" . }}
+  labels:
+    {{- include "supplygraph.labels" . | nindent 4 }}
+    {{- with .Values.metrics.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: supplygraph
+      rules:
+        - alert: SupplyGraphDataStale
+          expr: max(supplygraph_data_age_seconds{source="risk_scores"}) > {{ mul .Values.metrics.prometheusRule.staleAfterHours 3600 }}
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Risk scores are older than {{ .Values.metrics.prometheusRule.staleAfterHours }}h: the pipeline CronJob is failing or blocked by quality checks."
+        - alert: SupplyGraphWarehouseUnreadable
+          expr: max(supplygraph_warehouse_up) == 0
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "The API cannot read the warehouse; the explorer is not serving data."
+        - alert: SupplyGraphServerErrors
+          expr: sum(rate(supplygraph_http_requests_total{status=~"5.."}[10m])) / clamp_min(sum(rate(supplygraph_http_requests_total[10m])), 1e-9) > 0.05
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "More than 5% of SupplyGraph API requests fail with a server error."
+        - alert: SupplyGraphDecisionsPiling
+          expr: max(supplygraph_actions{status="proposed"}) > 20
+          for: 24h
+          labels:
+            severity: info
+          annotations:
+            summary: "More than 20 agent proposals have waited a day for an analyst decision."
+{{- end }}

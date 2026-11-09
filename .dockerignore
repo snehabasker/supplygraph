@@ -1,0 +1,16 @@
+.git
+.venv
+.env
+.env.*
+!.env.example
+data/
+**/__pycache__
+.pytest_cache
+.ruff_cache
+.coverage
+htmlcov
+web/node_modules
+web/dist
+deploy/
+docs/
+tests/

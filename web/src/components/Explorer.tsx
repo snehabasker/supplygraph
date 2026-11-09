@@ -8,15 +8,17 @@ import GraphView from "./GraphView";
 
 const DEFAULT_LEI = "549300KB6NK5SBD14S87"; // TSMC: the most connected supplier in the data
 
-export default function Explorer({ lei }: { lei?: string }) {
+export default function Explorer({ lei, view }: { lei?: string; view?: string }) {
   const center = lei ?? DEFAULT_LEI;
   const [depth, setDepth] = useState(1);
-  const [mode, setMode] = useState<"neighborhood" | "scenario">("neighborhood");
+  // The view is part of the URL (#/company/<LEI>/scenario), so it can be linked and shared.
+  const mode: "neighborhood" | "scenario" = view === "scenario" ? "scenario" : "neighborhood";
+  const setMode = (m: "neighborhood" | "scenario") =>
+    go(`company/${center}${m === "scenario" ? "/scenario" : ""}`);
   const [severity, setSeverity] = useState(1);
   const [selected, setSelected] = useState(center);
   useEffect(() => {
     setSelected(center);
-    setMode("neighborhood");
   }, [center]);
 
   const graph = useLoad<GraphPayload | Scenario>(

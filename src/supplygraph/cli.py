@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import getpass
 import json
-import logging
 import sys
 from pathlib import Path
 
 import typer
 
-from supplygraph import pipeline, quality
+from supplygraph import logs, pipeline, quality
 from supplygraph.config import load_settings
 
 app = typer.Typer(help="SupplyGraph: supplier risk knowledge graph pipeline.", no_args_is_help=True)
@@ -26,12 +25,7 @@ def main(verbose: bool = typer.Option(False, "--verbose", "-v", help="Debug logg
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
-    logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.INFO,
-        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
-    )
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("neo4j").setLevel(logging.WARNING)  # "constraint already exists" noise
+    logs.configure(verbose)
 
 
 @app.command("ingest-gleif")
@@ -375,21 +369,44 @@ def evaluate_agent(
 
 @app.command()
 def serve(
-    host: str = typer.Option("127.0.0.1", help="Keep on localhost: the API has no auth."),
+    host: str = typer.Option("127.0.0.1", help="Bind address. Off localhost, decisions and "
+                                               "ask need SUPPLYGRAPH_API_TOKEN."),
     port: int = typer.Option(8000),
     static: Path = typer.Option(Path("web/dist"), help="Built UI (cd web; npm run build)."),
 ) -> None:
     """Serve the explorer UI and its read API (graph explorer, risk dashboard, actions)."""
+    import os
+
     import uvicorn
 
-    from supplygraph.api.app import app_for_settings
+    from supplygraph.api.app import app_for_settings, write_mode
 
     if not (static / "index.html").exists():
         typer.echo(f"No built UI in {static}: serving the API only (docs at /docs). "
                    "Build it with: cd web; npm install; npm run build", err=True)
-    typer.echo(f"SupplyGraph explorer -> http://{host}:{port}")
-    uvicorn.run(app_for_settings(load_settings(), static), host=host, port=port,
+    token = os.getenv("SUPPLYGRAPH_API_TOKEN") or None
+    writes = write_mode(host, token)
+    if writes == "off":
+        typer.echo("Bound beyond localhost without SUPPLYGRAPH_API_TOKEN: serving read-only "
+                   "(analyst decisions and ask are disabled).", err=True)
+    typer.echo(f"SupplyGraph explorer -> http://{host}:{port}  (writes: {writes})")
+    uvicorn.run(app_for_settings(load_settings(), static, writes, token), host=host, port=port,
                 log_level="warning")
+
+
+@app.command("demo-data")
+def demo_data(
+    eval_dir: Path = typer.Option(DEFAULT_EVAL_DIR / "agent", help="Holds fixture/."),
+    force: bool = typer.Option(False, help="Replace an existing warehouse."),
+) -> None:
+    """Create a warehouse from the committed real-data snapshot: a demo with no network,
+    API keys or pipeline run."""
+    try:
+        counts = pipeline.demo_data(load_settings(), eval_dir, force=force)
+    except FileExistsError as exc:
+        typer.echo(f"ERROR: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Demo warehouse -> {load_settings().warehouse_path}: {counts}")
 
 
 @app.command()

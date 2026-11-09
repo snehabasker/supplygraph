@@ -1,0 +1,24 @@
+SupplyGraph {{ .Chart.AppVersion }} is installed as "{{ .Release.Name }}".
+
+Open the explorer:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "supplygraph.fullname" . }} 8000:{{ .Values.service.port }}
+  then browse http://127.0.0.1:8000
+{{- if .Values.demo.enabled }}
+
+Until the first pipeline run publishes a warehouse, it serves the committed demo snapshot.
+{{- end }}
+{{- if include "supplygraph.hasToken" . }}
+
+Analyst decisions and Ask need the API token (Secret {{ include "supplygraph.tokenSecret" . }}).
+{{- else }}
+
+No API token configured: the server is read-only (decisions and Ask are disabled).
+{{- end }}
+{{- if .Values.pipeline.enabled }}
+
+Pipeline: CronJob {{ include "supplygraph.fullname" . }}-pipeline, schedule "{{ .Values.pipeline.schedule }}".
+Run it now:
+  kubectl -n {{ .Release.Namespace }} create job --from=cronjob/{{ include "supplygraph.fullname" . }}-pipeline pipeline-manual
+{{- end }}
+
+Health: /healthz (liveness), /readyz (readiness), /metrics (Prometheus).

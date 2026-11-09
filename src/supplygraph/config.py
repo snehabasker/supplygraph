@@ -24,6 +24,10 @@ class Settings:
     user_agent: str = "supplygraph/0.1"
     # SEC requires a User-Agent with a contact email; unset means SEC ingestion is unavailable.
     sec_user_agent: str | None = None
+    # Where analyst actions are logged; defaults to <data_dir>/actions/events.jsonl. Set it when
+    # the pipeline runs in a different data dir than the server (see deploy/), so both share
+    # one audit log.
+    actions_log_path: Path | None = None
 
     @property
     def raw_dir(self) -> Path:
@@ -57,7 +61,7 @@ class Settings:
     @property
     def actions_log(self) -> Path:
         """Append-only audit log of proposed / approved / rejected analyst actions."""
-        return self.data_dir / "actions" / "events.jsonl"
+        return self.actions_log_path or self.data_dir / "actions" / "events.jsonl"
 
     @property
     def agent_sessions_dir(self) -> Path:
@@ -73,4 +77,5 @@ def load_settings() -> Settings:
         neo4j_password=os.getenv("NEO4J_PASSWORD", "change-me-please"),
         opensanctions_url=os.getenv("OPENSANCTIONS_URL", DEFAULT_OPENSANCTIONS_URL),
         sec_user_agent=os.getenv("SEC_USER_AGENT") or None,
+        actions_log_path=Path(p) if (p := os.getenv("SUPPLYGRAPH_ACTIONS_LOG")) else None,
     )

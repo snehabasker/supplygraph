@@ -234,6 +234,28 @@ supplygraph serve                 # http://127.0.0.1:8000  (API docs at /docs)
 The server binds to localhost and has no authentication: it is a single-analyst tool. For
 frontend development, `npm run dev` in `web/` proxies `/api` to a running `supplygraph serve`.
 
+## Deploy and operate
+
+```powershell
+docker build -t supplygraph:0.8.0 .
+helm install sg deploy/helm/supplygraph -n supplygraph --create-namespace --set api.token.existingSecret=<secret>
+helm test sg -n supplygraph
+```
+
+- **One image for both workloads.** It runs the server (a Deployment with liveness and
+  readiness probes) and the nightly pipeline (a CronJob).
+- **Atomic publishing.** The pipeline builds the warehouse in a work directory and publishes it
+  by atomic rename, and only if the quality gate passed, so the explorer never serves a broken
+  or half-built warehouse.
+- **Usable on install.** A fresh install serves the committed demo snapshot until the first run.
+- **Monitoring.** `/metrics` exposes data-freshness, volume and traffic metrics, and the
+  optional PrometheusRule alerts when risk scores go stale. Logs are JSON.
+- **Write protection.** Writes need an API token; without one, a deployed server is read-only.
+
+Verified on a kind cluster: install, `helm test`, token auth, and one real pipeline run. See
+[deploy/README.md](deploy/README.md) for the guide, [docs/adr/](docs/adr/) for the twelve
+architecture decision records, and [docs/demo.md](docs/demo.md) for a five-minute walkthrough.
+
 ## Development
 
 ```powershell
@@ -258,7 +280,7 @@ Neo4j service container on every push and PR.
 - [x] **M5 — Graph risk:** explainable risk propagation, disruption scenarios, weight sensitivity, supplier link-prediction benchmark (GNN deferred, see docs/risk.md)
 - [x] **M6 — Agent:** GraphRAG Q&A over graph tools with grounded citations, proposal-only audited actions applied by the pipeline, 22-case eval suite (built and tested; live eval score pending API credit, see docs/agent.md)
 - [x] **M7 — UI:** React + Cytoscape graph explorer, risk dashboard, scenario view, analyst decisions on agent proposals (`supplygraph serve`)
-- [ ] **M8 — Deploy:** Helm, observability, ADRs, demo
+- [x] **M8 — Deploy:** container image, Helm chart (API + pipeline CronJob with atomic publish), API token auth, health/readiness probes, Prometheus metrics and alerts, JSON logs, 12 ADRs, demo walkthrough
 
 ## Data & licensing
 

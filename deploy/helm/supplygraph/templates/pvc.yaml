@@ -1,0 +1,17 @@
+{{- if not .Values.persistence.existingClaim }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "supplygraph.claim" . }}
+  labels: {{- include "supplygraph.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep   # the audit log of analyst decisions lives here
+spec:
+  accessModes: {{- toYaml .Values.persistence.accessModes | nindent 4 }}
+  {{- with .Values.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size }}
+{{- end }}

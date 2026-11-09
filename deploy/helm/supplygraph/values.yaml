@@ -1,0 +1,95 @@
+# Default values for supplygraph. See README.md in this directory and docs/adr/0011.
+
+image:
+  repository: supplygraph
+  tag: ""            # defaults to the chart appVersion
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# Serve the committed real-data snapshot until the first pipeline run publishes a warehouse.
+# Needs no network or API keys - the quickest way to see the app.
+demo:
+  enabled: true
+
+api:
+  replicas: 1        # one writer of decisions per RWO volume; see README
+  port: 8000
+  # Write protection (docs/adr/0010): with a token, analyst decisions and /api/ask need
+  # "Authorization: Bearer <token>"; without one the server is read-only.
+  token:
+    value: ""                 # or reference an existing Secret:
+    existingSecret: ""
+    existingSecretKey: api-token
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {memory: 1Gi}
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: supplygraph.example.com
+  tls: []
+
+persistence:
+  size: 5Gi
+  storageClass: ""   # cluster default
+  accessModes: [ReadWriteOnce]
+  existingClaim: ""
+
+# Nightly pipeline: ingest -> build -> resolve -> score-risk -> quality checks. It builds into
+# /data/work and only publishes (atomic rename) a warehouse that passed the checks.
+pipeline:
+  enabled: true
+  schedule: "0 3 * * *"
+  suspend: false
+  timeZone: UTC
+  activeDeadlineSeconds: 7200
+  backoffLimit: 1
+  loadGraph: false   # also run load-graph into Neo4j (set neo4j.uri)
+  resources:
+    requests: {cpu: 500m, memory: 1Gi}
+    limits: {memory: 3Gi}
+
+# Configuration passed to both workloads.
+config:
+  llmModel: claude-opus-5-5
+  opensanctionsUrl: ""         # empty: the package default
+neo4j:
+  uri: ""                      # e.g. bolt://neo4j:7687 ; the graph DB is not part of this chart
+  user: neo4j
+
+# Secret environment variables (NEO4J_PASSWORD, SEC_USER_AGENT, ANTHROPIC_API_KEY).
+# Prefer an existing Secret; inline values end up in the Helm release.
+secrets:
+  existingSecret: ""
+  values: {}
+
+metrics:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    labels: {}
+  prometheusRule:
+    enabled: false
+    labels: {}
+    staleAfterHours: 30        # one missed nightly run plus margin
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile: {type: RuntimeDefault}
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities: {drop: [ALL]}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

@@ -284,6 +284,36 @@ def evaluate_agent(settings: Settings, eval_dir: Path, effort: str = "medium",
     return {"model": model, "effort": effort, **report}
 
 
+def demo_data(settings: Settings, eval_dir: Path, force: bool = False) -> dict[str, int]:
+    """Write the committed fixture (a snapshot of real data, without the eval's planted rows)
+    into the warehouse file. Refuses to overwrite a warehouse unless `force`."""
+    from supplygraph.agent.evaluate import load_fixture
+
+    path = settings.warehouse_path
+    if path.exists() and not force:
+        raise FileExistsError(f"{path} exists; pass --force to replace it with demo data")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".demo-tmp")
+    tmp.unlink(missing_ok=True)
+    con, now = load_fixture(eval_dir / "fixture")
+    counts = {}
+    with con:
+        literal = str(tmp.resolve()).replace("'", "''")
+        con.execute(f"ATTACH '{literal}' AS demo")
+        tables = [t for (t,) in con.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_catalog = 'memory' "
+            "ORDER BY 1").fetchall()]
+        for table in tables:
+            con.execute(f"CREATE TABLE demo.{table} AS SELECT * FROM memory.{table}")
+            counts[table] = con.execute(f"SELECT count(*) FROM demo.{table}").fetchone()[0]
+        # The snapshot's scoring time, so freshness metrics tell the truth about demo data.
+        con.execute("CREATE TABLE demo.risk_config AS SELECT '{}' AS config, "
+                    "CAST(? AS TIMESTAMPTZ) AS scored_at", [now])
+        con.execute("DETACH demo")
+    tmp.replace(path)  # atomic: a running server never sees a half-written file
+    return counts
+
+
 def check(settings: Settings) -> list[quality.CheckResult]:
     with warehouse.connect(settings.warehouse_path) as con:
         return quality.run_checks(con)

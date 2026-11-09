@@ -55,7 +55,7 @@ export default function App() {
       </header>
       <main>
         {page === "" && <Dashboard />}
-        {page === "company" && <Explorer lei={route[1]} />}
+        {page === "company" && <Explorer lei={route[1]} view={route[2]} />}
         {page === "actions" && <ActionsPage onChange={() => api.summary().then((s) => setProposed(s.proposed_actions))} />}
         {page === "ask" && <AskPage />}
         {!["", "company", "actions", "ask"].includes(page) && <p>Page not found. <a href="#/">Dashboard</a></p>}

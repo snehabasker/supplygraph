@@ -24,8 +24,10 @@ export default function AskPage() {
     try {
       setResult(await api.ask(question.trim(), allowActions));
     } catch (e) {
-      setError(e instanceof ApiError && e.status === 503
-        ? `${e.message} The rest of the explorer works without it.`
+      const status = e instanceof ApiError ? e.status : 0;
+      setError(status === 503 ? `${e instanceof Error ? e.message : e} The rest of the explorer works without it.`
+        : status === 401 ? "This server needs an API token: enter it on the Actions page, then ask again."
+        : status === 403 ? "This server is read-only: asking is disabled."
         : (e as Error).message);
     } finally {
       setBusy(false);

@@ -1,0 +1,65 @@
+{{- if .Values.pipeline.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "supplygraph.fullname" . }}-pipeline
+  labels:
+    {{- include "supplygraph.labels" . | nindent 4 }}
+    app.kubernetes.io/component: pipeline
+spec:
+  schedule: {{ .Values.pipeline.schedule | quote }}
+  timeZone: {{ .Values.pipeline.timeZone | quote }}
+  suspend: {{ .Values.pipeline.suspend }}
+  concurrencyPolicy: Forbid          # two runs would race on /data/work
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: {{ .Values.pipeline.backoffLimit }}
+      activeDeadlineSeconds: {{ .Values.pipeline.activeDeadlineSeconds }}
+      template:
+        metadata:
+          labels:
+            {{- include "supplygraph.selector" . | nindent 12 }}
+            app.kubernetes.io/component: pipeline
+        spec:
+          restartPolicy: Never
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext: {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          # Same node as the API pod: the data volume is ReadWriteOnce.
+          affinity:
+            podAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchLabels:
+                      {{- include "supplygraph.selector" . | nindent 22 }}
+                      app.kubernetes.io/component: api
+                  topologyKey: kubernetes.io/hostname
+          containers:
+            - name: pipeline
+              image: {{ include "supplygraph.image" . }}
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              securityContext: {{- toYaml .Values.securityContext | nindent 16 }}
+              command: ["sh", "/scripts/run.sh"]
+              env: {{- include "supplygraph.env" . | nindent 16 }}
+              {{- include "supplygraph.envFrom" . | nindent 14 }}
+              resources: {{- toYaml .Values.pipeline.resources | nindent 16 }}
+              volumeMounts:
+                - name: data
+                  mountPath: /data
+                - name: tmp
+                  mountPath: /tmp
+                - name: scripts
+                  mountPath: /scripts
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: {{ include "supplygraph.claim" . }}
+            - name: tmp
+              emptyDir: {}
+            - name: scripts
+              configMap:
+                name: {{ include "supplygraph.fullname" . }}-pipeline
+{{- end }}

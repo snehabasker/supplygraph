@@ -149,10 +149,35 @@ export class ApiError extends Error {
   }
 }
 
+const TOKEN_KEY = "supplygraph.token";
+
+/** API token for write endpoints, kept for this browser tab only. */
+export const apiToken = {
+  get(): string {
+    try {
+      return sessionStorage.getItem(TOKEN_KEY) ?? "";
+    } catch {
+      return "";
+    }
+  },
+  set(value: string) {
+    try {
+      sessionStorage.setItem(TOKEN_KEY, value);
+    } catch {
+      /* storage blocked: the token just isn't remembered */
+    }
+  },
+};
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = apiToken.get();
   const res = await fetch(path, {
     ...init,
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(init?.headers ?? {}),
+    },
   });
   if (!res.ok) {
     let detail = res.statusText;
@@ -169,7 +194,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 const q = encodeURIComponent;
 
+export interface ServerConfig { version: string; writes: "open" | "token" | "off" }
+
 export const api = {
+  config: () => request<ServerConfig>("/api/config"),
   summary: () => request<Summary>("/api/summary"),
   search: (text: string) => request<{ matches: SearchMatch[] }>(`/api/search?q=${q(text)}`),
   risks: (limit = 15) => request<{ companies: RiskRow[] }>(`/api/risks?limit=${limit}`),

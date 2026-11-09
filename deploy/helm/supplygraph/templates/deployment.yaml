@@ -1,0 +1,96 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "supplygraph.fullname" . }}
+  labels:
+    {{- include "supplygraph.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  replicas: {{ .Values.api.replicas }}
+  # The data volume is ReadWriteOnce: never run old and new pods side by side.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "supplygraph.selector" . | nindent 6 }}
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        {{- include "supplygraph.selector" . | nindent 8 }}
+        app.kubernetes.io/component: api
+      annotations:
+        checksum/config: {{ toJson .Values.config | sha256sum | trunc 16 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext: {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if .Values.demo.enabled }}
+      initContainers:
+        - name: demo-data
+          image: {{ include "supplygraph.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
+          # Only when nothing has been published yet: never replaces real pipeline output.
+          command: ["sh", "-c", "[ -f /data/warehouse.duckdb ] || supplygraph demo-data"]
+          env: {{- include "supplygraph.env" . | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      {{- end }}
+      containers:
+        - name: api
+          image: {{ include "supplygraph.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext: {{- toYaml .Values.securityContext | nindent 12 }}
+          args: ["serve", "--host", "0.0.0.0", "--port", "{{ .Values.api.port }}"]
+          env:
+            {{- include "supplygraph.env" . | nindent 12 }}
+            {{- if include "supplygraph.hasToken" . }}
+            - name: SUPPLYGRAPH_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "supplygraph.tokenSecret" . }}
+                  key: {{ .Values.api.token.existingSecretKey }}
+            {{- end }}
+          {{- include "supplygraph.envFrom" . | nindent 10 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.api.port }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+          resources: {{- toYaml .Values.api.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "supplygraph.claim" . }}
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}

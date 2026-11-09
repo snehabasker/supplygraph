@@ -56,3 +56,29 @@ jobs:
         run: npm test
       - name: Typecheck + build
         run: npm run build
+
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: Lint and render the chart (defaults and all options on)
+        run: |
+          helm lint deploy/helm/supplygraph
+          helm lint deploy/helm/supplygraph --set api.token.value=x \
+            --set metrics.serviceMonitor.enabled=true --set metrics.prometheusRule.enabled=true \
+            --set ingress.enabled=true --set secrets.values.SEC_USER_AGENT=y \
+            --set pipeline.loadGraph=true --set neo4j.uri=bolt://neo4j:7687
+          helm template sg deploy/helm/supplygraph --set api.token.value=x > /dev/null
+      - name: Build the image
+        run: docker build -t supplygraph:ci .
+      - name: Smoke-test the image (demo data, read-only rootfs)
+        run: |
+          docker volume create sgdata
+          docker run --rm -v sgdata:/data supplygraph:ci demo-data
+          docker run -d --name sg -p 8000:8000 -v sgdata:/data --read-only --tmpfs /tmp supplygraph:ci
+          for i in $(seq 1 30); do curl -fs localhost:8000/readyz && break; sleep 1; done
+          curl -fs localhost:8000/readyz
+          curl -fs localhost:8000/metrics | grep -q 'supplygraph_rows{kind="companies"} 278.0'
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST localhost:8000/api/ask \
+            -H 'Content-Type: application/json' -d '{"question":"q"}')" = 403

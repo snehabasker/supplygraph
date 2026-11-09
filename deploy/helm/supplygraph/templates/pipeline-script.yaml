@@ -1,0 +1,24 @@
+{{- if .Values.pipeline.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "supplygraph.fullname" . }}-pipeline
+  labels: {{- include "supplygraph.labels" . | nindent 4 }}
+data:
+  run.sh: |
+    #!/bin/sh
+    # Build into /data/work; publish only a warehouse that passed the blocking quality checks
+    # (run-all exits non-zero otherwise, and `set -e` stops before publishing).
+    # The server opens the warehouse per request, so the atomic rename swaps it with no downtime.
+    set -eu
+    export SUPPLYGRAPH_DATA_DIR=/data/work
+    mkdir -p /data/work
+    echo '{"message": "pipeline: starting run-all"}'
+    supplygraph run-all --skip-graph
+    cp /data/work/warehouse.duckdb /data/warehouse.duckdb.next
+    mv -f /data/warehouse.duckdb.next /data/warehouse.duckdb
+    echo '{"message": "pipeline: published /data/warehouse.duckdb"}'
+    {{- if .Values.pipeline.loadGraph }}
+    SUPPLYGRAPH_DATA_DIR=/data supplygraph load-graph
+    {{- end }}
+{{- end }}

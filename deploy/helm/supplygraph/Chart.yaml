@@ -1,0 +1,7 @@
+apiVersion: v2
+name: supplygraph
+description: Supplier-risk knowledge graph - explorer UI/API and the scheduled data pipeline.
+type: application
+version: 0.8.0
+appVersion: "0.8.0"
+keywords: [supply-chain, sanctions, knowledge-graph]

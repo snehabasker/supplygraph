@@ -4,29 +4,54 @@ Read endpoints open a read-only DuckDB connection per request, so the UI never b
 changes the pipeline. The only writes are analyst decisions on proposed actions, which append
 to the same audited event log as `supplygraph actions approve|reject`.
 
-There is no authentication: the server is meant for one analyst on localhost
-(`supplygraph serve` binds 127.0.0.1). Don't expose it on a network as-is.
+Writes (analyst decisions, and `/api/ask`, which spends API credit) have three modes, chosen
+by `write_mode()` (docs/adr/0010):
+
+* `open`  - no auth; only for a server bound to localhost (the `supplygraph serve` default);
+* `token` - every write needs `Authorization: Bearer <SUPPLYGRAPH_API_TOKEN>`;
+* `off`   - read-only; what a non-local server gets when no token is configured.
+
+Reads are unauthenticated in every mode: put the server behind your network's access control
+(ingress auth, VPN) if the data must not be public.
 
 No `from __future__ import annotations` here: FastAPI resolves the dependency annotations
 (`Con`, defined inside `create_app`) at runtime.
 """
 
+import hmac
+import logging
+import time
 from collections.abc import Callable, Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
 import duckdb
-from fastapi import Depends, FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel, Field
 
+from supplygraph import __version__
 from supplygraph.agent.actions import STATUSES, ActionError, ActionStore
 from supplygraph.agent.tools import RELATIONS, GraphTools, ToolError
 from supplygraph.api import views
+from supplygraph.api.metrics import Metrics
+from supplygraph.warehouse import table_exists
+
+log = logging.getLogger(__name__)
 
 Connect = Callable[[], duckdb.DuckDBPyConnection]
+WriteMode = Literal["open", "token", "off"]
+LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+
+
+def write_mode(host: str, token: str | None) -> WriteMode:
+    """A token always protects writes; without one, writes are open only on localhost."""
+    if token:
+        return "token"
+    return "open" if host in LOOPBACK else "off"
 
 
 class Decision(BaseModel):
@@ -48,10 +73,74 @@ def create_app(
     static_dir: Path | None = None,
     sessions_dir: Path | None = None,
     agent_client: object | None = None,
+    writes: WriteMode = "open",
+    token: str | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="SupplyGraph", version="0.7",
+    if writes == "token" and not token:
+        raise ValueError("write mode 'token' needs a token")
+    app = FastAPI(title="SupplyGraph", version=__version__,
                   description="Supplier-risk knowledge graph: read API + analyst decisions.")
     store = ActionStore(actions_log)
+    metrics = Metrics(connect, store)
+
+    @app.middleware("http")
+    async def observe(request: Request, call_next):
+        started = time.perf_counter()
+        try:
+            response = await call_next(request)
+        except Exception:
+            log.exception("unhandled error", extra={"path": request.url.path})
+            response = JSONResponse({"detail": "internal error"}, status_code=500)
+        route = request.scope.get("route")
+        template = getattr(route, "path", "unmatched")
+        if template.startswith("/api") or template in ("/healthz", "/readyz"):
+            metrics.observe(request.method, template, response.status_code, started)
+        return response
+
+    def require_write(authorization: Annotated[str | None, Header()] = None) -> None:
+        if writes == "open":
+            return
+        if writes == "off":
+            raise HTTPException(403, "This server is read-only: start it with "
+                                     "SUPPLYGRAPH_API_TOKEN set to enable decisions and ask.")
+        scheme, _, given = (authorization or "").partition(" ")
+        if scheme.lower() != "bearer" or not hmac.compare_digest(given.encode(),
+                                                                 (token or "").encode()):
+            raise HTTPException(401, "Missing or wrong API token (Authorization: Bearer ...).",
+                                headers={"WWW-Authenticate": "Bearer"})
+
+    Writer = Annotated[None, Depends(require_write)]
+
+    @app.get("/healthz", include_in_schema=False)
+    def healthz() -> dict:
+        """Liveness: the process serves requests."""
+        return {"status": "ok"}
+
+    @app.get("/readyz", include_in_schema=False)
+    def readyz() -> Response:
+        """Readiness: the warehouse opens and has companies (otherwise there is nothing to
+        serve; a pipeline run or `demo-data` fixes it)."""
+        try:
+            con = connect()
+            try:
+                ok = table_exists(con, "companies") and (
+                    con.execute("SELECT count(*) FROM companies").fetchone()[0] > 0)
+            finally:
+                con.close()
+        except Exception as exc:
+            return JSONResponse({"status": "unavailable", "reason": str(exc)[:200]}, 503)
+        if not ok:
+            return JSONResponse({"status": "unavailable", "reason": "warehouse is empty"}, 503)
+        return JSONResponse({"status": "ready"})
+
+    @app.get("/metrics", include_in_schema=False)
+    def prometheus() -> Response:
+        return Response(generate_latest(metrics.registry), media_type=CONTENT_TYPE_LATEST)
+
+    @app.get("/api/config")
+    def config() -> dict:
+        """What the UI needs to know about this server."""
+        return {"version": __version__, "writes": writes}
 
     def db() -> Iterator[duckdb.DuckDBPyConnection]:
         con = connect()
@@ -131,7 +220,7 @@ def create_app(
         return {"actions": sorted(rows, key=lambda a: a["proposed_at"], reverse=True)}
 
     @app.post("/api/actions/{action_id}/decision")
-    def decide(con: Con, action_id: str, decision: Decision) -> dict:
+    def decide(con: Con, action_id: str, decision: Decision, _: Writer) -> dict:
         try:
             a = store.decide(con, action_id, decision.approve, decision.by, decision.note)
         except ActionError as exc:
@@ -140,7 +229,7 @@ def create_app(
         return a.as_dict()
 
     @app.post("/api/ask")
-    def ask(con: Con, body: Question) -> dict:
+    def ask(con: Con, body: Question, _: Writer) -> dict:
         import anthropic
 
         from supplygraph.agent.agent import Agent
@@ -174,9 +263,13 @@ def create_app(
     return app
 
 
-def app_for_settings(settings, static_dir: Path | None = None) -> FastAPI:
+def app_for_settings(settings, static_dir: Path | None = None, writes: WriteMode = "open",
+                     token: str | None = None) -> FastAPI:
+    """The server starts even before the warehouse exists (e.g. a fresh deployment waiting for
+    its first pipeline run): /readyz reports 503 until it does."""
     path = settings.warehouse_path
     if not path.exists():
-        raise FileNotFoundError(f"{path} not found; run the pipeline first")
+        log.warning("warehouse %s not found yet; not ready until the pipeline creates it", path)
     return create_app(lambda: duckdb.connect(str(path), read_only=True), settings.actions_log,
-                      static_dir=static_dir, sessions_dir=settings.agent_sessions_dir)
+                      static_dir=static_dir, sessions_dir=settings.agent_sessions_dir,
+                      writes=writes, token=token)

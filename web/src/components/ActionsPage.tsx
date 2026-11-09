@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api, type Action } from "../api";
+import { api, apiToken, type Action } from "../api";
 import { ACTION_LABELS } from "../format";
 import { Loading, RefLink, useLoad } from "./common";
 
@@ -17,7 +17,10 @@ export default function ActionsPage({ onChange }: { onChange: () => void }) {
   const [status, setStatus] = useState<string>("proposed");
   const [version, setVersion] = useState(0);
   const list = useLoad(() => api.actions(status || undefined), [status, version]);
+  const config = useLoad(api.config, []);
+  const writes = config.data?.writes ?? "open";
   const [analyst, setAnalyst] = useState(storedAnalyst);
+  const [token, setToken] = useState(apiToken.get);
 
   const saveAnalyst = (name: string) => {
     setAnalyst(name);
@@ -43,23 +46,36 @@ export default function ActionsPage({ onChange }: { onChange: () => void }) {
               <button key={v} aria-pressed={status === v} onClick={() => setStatus(v)}>{l}</button>
             ))}
           </div>
+          {writes === "token" && (
+            <label className="small">API token{" "}
+              <input type="password" value={token} autoComplete="off"
+                     onChange={(e) => { setToken(e.target.value); apiToken.set(e.target.value); }}
+                     style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface-1)" }} />
+            </label>
+          )}
           <label className="small">Deciding analyst{" "}
             <input value={analyst} onChange={(e) => saveAnalyst(e.target.value)} placeholder="your name"
                    style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface-1)" }} />
           </label>
         </div>
+        {writes === "off" && (
+          <p className="notice small" style={{ marginBottom: 0 }}>
+            This server is read-only (no API token configured), so decisions are disabled here.
+            Use <span className="mono">supplygraph actions approve|reject</span>, or redeploy with a token.
+          </p>
+        )}
       </section>
       <Loading error={list.error} loading={list.loading && !list.data} />
       {list.data && list.data.actions.length === 0 && <p className="muted">No actions here.</p>}
       {list.data?.actions.map((a) => (
-        <ActionCard key={a.action_id} action={a} analyst={analyst}
+        <ActionCard key={a.action_id} action={a} analyst={analyst} canDecide={writes !== "off"}
                     onDecided={() => { setVersion((v) => v + 1); onChange(); }} />
       ))}
     </div>
   );
 }
 
-function ActionCard({ action: a, analyst, onDecided }: { action: Action; analyst: string; onDecided: () => void }) {
+function ActionCard({ action: a, analyst, canDecide, onDecided }: { action: Action; analyst: string; canDecide: boolean; onDecided: () => void }) {
   const [note, setNote] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -109,7 +125,7 @@ function ActionCard({ action: a, analyst, onDecided }: { action: Action; analyst
           {a.decision_note && <> — {a.decision_note}</>}
         </div>
       )}
-      {a.status === "proposed" && (
+      {a.status === "proposed" && canDecide && (
         <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
           <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Note (required to reject)"
                  aria-label="Decision note" style={{ flex: 1, minWidth: 200, padding: "6px 8px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface-1)" }} />

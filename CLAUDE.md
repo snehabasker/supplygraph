@@ -60,6 +60,14 @@
 - Charts follow the data-viz rules: one sequential hue for risk, status colors only with a label,
   link type never by color alone. Look at a screenshot after UI changes.
 
+## Deployment
+- Image: `docker build -t supplygraph:0.8.0 .`; chart: `helm lint deploy/helm/supplygraph`.
+  Test-deploy only to a dedicated kind cluster (`kind-supplygraph`), always with an explicit
+  `--kube-context`; never to other projects' clusters.
+- The API's write mode (open / token / off) is a security boundary (docs/adr/0010): new write
+  endpoints must depend on `require_write`.
+- Changing a recorded decision means writing a new ADR in `docs/adr/` that supersedes the old.
+
 ## Rules
 - `docs/ontology.md` is the contract. Changing an object/link type means updating it first.
 - All pipeline steps must be idempotent (CREATE OR REPLACE in DuckDB, MERGE in Neo4j).
