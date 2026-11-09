@@ -5,13 +5,14 @@
 > *"Which of our suppliers are exposed to sanctions, hidden ownership, or disruption — and what should we do about it?"*
 
 SupplyGraph ingests open corporate-ownership, sanctions, SEC filing and news data, maps it into
-a typed ontology (objects, links, actions), loads it into Neo4j, and (in later milestones)
-layers graph ML and a GraphRAG agent on top.
+a typed ontology (objects, links, actions), loads it into Neo4j, scores explainable risk over
+the graph, and answers analysts' questions with a Claude agent whose every change is a
+human-approved, audited action.
 
 ## Architecture
 
 ```
-GLEIF API ─────┐                                     ┌─► Neo4j knowledge graph ─► GraphRAG agent (M6)
+GLEIF API ─────┐                                     ┌─► Neo4j knowledge graph ─► GraphRAG agent ─► audited actions
 OpenSanctions ─┤                                     │                         └─► Explorer UI (M7)
 SEC EDGAR ─► supplier extraction ─┼─► raw JSONL/CSV ─► DuckDB ─► DQ checks ─┤
    (10-K/20-F)  (rules | Claude)  │     (bronze)       (silver)              └─► Graph ML risk scores (M5)
@@ -189,6 +190,25 @@ holds up when weights change: every weight scaled ×0.5 or ×1.5 still keeps at 
 For supplier recommendation, a popularity baseline beats collaborative filtering on today's 30
 links, which is why there is no GNN yet. Details and the decision record are in [docs/risk.md](docs/risk.md).
 
+## Ask the graph; act through audited proposals
+
+A Claude agent answers questions using read-only graph tools. Every fact it states cites a graph
+ref (`[lei:…]`, `[sanction:…]`, `[filing:…]`, `[news:…]`) that a tool actually returned, and the
+grounding is checked in code. It can *propose* the ontology's four actions, but only a human can
+approve one. Needs Claude credentials (`ANTHROPIC_API_KEY` or `ant auth login`).
+
+```powershell
+supplygraph ask "Why is Rosneft Deutschland GmbH's risk score so high?"
+supplygraph ask "Dismiss the ASML Hong Kong sanctions candidate - it only matched the alias 'Hong Kong'"
+supplygraph actions list --status proposed
+supplygraph actions approve A-470e5c7cd3 --by <analyst>    # applied at the next build / resolve
+supplygraph evaluate-agent        # 22-case eval suite on a frozen fixture (grounding, actions, injection)
+```
+
+On the live data, approving that dismissal removes the spurious possible-sanction risk from
+the whole ASML group (companies at risk: 24 → 7). Design, safety properties and the eval
+suite are in [docs/agent.md](docs/agent.md).
+
 ## Development
 
 ```powershell
@@ -209,7 +229,7 @@ Neo4j service container on every push and PR.
 - [x] **M3 — Entity resolution:** registration-number links, fuzzy name/country matching, Claude adjudication, review queue, dev/test evaluation
 - [x] **M4 — Filings & news:** supplier extraction from SEC 10-K/20-F (rules + Claude), GLEIF entity linking, GDELT disruption events, extraction eval
 - [x] **M5 — Graph risk:** explainable risk propagation, disruption scenarios, weight sensitivity, supplier link-prediction benchmark (GNN deferred, see docs/risk.md)
-- [ ] **M6 — Agent:** GraphRAG Q&A + audited actions, evaluated with an eval suite
+- [x] **M6 — Agent:** GraphRAG Q&A over graph tools with grounded citations, proposal-only audited actions applied by the pipeline, 22-case eval suite (built and tested; live eval score pending API credit, see docs/agent.md)
 - [ ] **M7 — UI:** React + Cytoscape graph explorer and risk dashboard
 - [ ] **M8 — Deploy:** Helm, observability, ADRs, demo
 

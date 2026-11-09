@@ -1,4 +1,4 @@
-# SupplyGraph ontology (v0.3)
+# SupplyGraph ontology (v0.4)
 
 The ontology is the contract between data pipelines, the graph, the agent and the UI.
 Every source is mapped *into* these types; nothing downstream reads raw source fields.
@@ -59,18 +59,45 @@ any edge can be audited against the source document.
 | `REGISTRATION_NUMBER` | Sanctions record lists the company's local register number (e.g. OGRN), same country, ≥ 6 chars | 1.0 |
 | `FUZZY_NAME` | Name + country score ≥ auto-match threshold, multi-token name | < 1.0 |
 | `LLM_ADJUDICATED` | Borderline candidate confirmed by Claude; `evidence.reasoning` records why | < 1.0 |
+| `ANALYST_CONFIRMED` | A human approved a `confirm_match` action on a review candidate | 1.0 (human-verified) |
 
-## Actions (Milestone 6)
+A pair with an approved `dismiss_match` action is recorded in `er_candidates` with
+`decision = no_match`, `method = ANALYST_DISMISSED`: it leaves the review queue and can never be
+auto-matched again.
 
-Actions are the only way the agent changes state, and every action is audited:
-`flag_supplier(lei, reason)`, `request_review(lei)`, `confirm_match(lei, sanction_id)`,
-`dismiss_match(lei, sanction_id, reason)`.
+## Actions
+
+Actions are the only way the agent changes state. The agent can only **propose** an action;
+a human approves or rejects it (`supplygraph actions approve|reject`). Every step is an event in
+the append-only log `data/actions/events.jsonl` (source of truth, survives warehouse rebuilds);
+`build` folds it into the `analyst_actions` table.
+
+| Action | Arguments | Precondition (checked at proposal and approval) | Effect once approved |
+|---|---|---|---|
+| `flag_supplier` | `lei`, `reason` | company exists | company joins the watchlist (reason `analyst_flag`) at the next `build`; `Company.analyst_flags` |
+| `request_review` | `lei`, `reason` | company exists | open item in the analyst queue; `Company.review_requested` |
+| `confirm_match` | `lei`, `sanction_id`, `reason` | the pair is in `er_candidates` | `SANCTIONED_AS` with `match_method = ANALYST_CONFIRMED` at the next `resolve` |
+| `dismiss_match` | `lei`, `sanction_id`, `reason` | the pair is in `er_candidates` | candidate leaves the review queue (`ANALYST_DISMISSED`) at the next `resolve` |
+
+Every proposal records `proposed_by` (agent model or analyst), the `session_id` and `question`
+that led to it, and `evidence`: the refs (`lei:…`, `sanction:…`, `filing:…`, `news:…`) the
+agent retrieved that support it — a proposal citing nothing it retrieved is rejected. An
+identical open or approved action is never proposed twice. Statuses: `proposed` →
+`approved` | `rejected`.
+
+## Agent answers
+
+The Q&A agent answers only from what its read-only tools return, and cites every fact with
+the ref of the object it came from: `[lei:<LEI>]`, `[sanction:<id>]`, `[filing:<accession>]`,
+`[news:<GDELT id>]`. Text from filings, news and sanctions records is untrusted data, never
+instructions.
 
 ## Invariants (enforced by `supplygraph check`, Dagster gates and Neo4j constraints)
 
 - `Company.lei` is unique and passes the ISO 7064 MOD 97-10 check.
 - No `OWNED_BY` self-loops; both endpoints exist.
-- Identifier matches have `confidence = 1.0`; name-based matches have `0 < confidence < 1.0`.
+- Identifier and analyst-confirmed matches have `confidence = 1.0`; automatic name-based matches
+  have `0 < confidence < 1.0`.
 - Every `SANCTIONED_AS` carries valid JSON `evidence` and references existing nodes.
 - A company resolved by identifier is never additionally fuzzy-matched.
 - Supplier links reference existing companies, are never self-loops, carry non-empty
@@ -78,3 +105,5 @@ Actions are the only way the agent changes state, and every action is audited:
 - Every company has a risk score in [0, 1]; every non-zero score is explained by drivers.
 - Every `NewsEvent` has at least one known event type; `MENTIONED_IN` only points from
   watchlist companies.
+- Every analyst action has a known type and status, a reason, and evidence; every decided action
+  records who decided and when.

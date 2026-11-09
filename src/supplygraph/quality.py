@@ -72,11 +72,14 @@ CHECKS: list[Check] = [
     Check("matches_method_known", "company_sanction_matches", ERROR,
           "Every match has a known match_method",
           sql="SELECT count(*) FROM company_sanction_matches WHERE match_method NOT IN "
-              "('LEI_IDENTIFIER', 'REGISTRATION_NUMBER', 'FUZZY_NAME', 'LLM_ADJUDICATED')"),
+              "('LEI_IDENTIFIER', 'REGISTRATION_NUMBER', 'FUZZY_NAME', 'LLM_ADJUDICATED', "
+              "'ANALYST_CONFIRMED')"),
     Check("matches_confidence_rule", "company_sanction_matches", ERROR,
-          "Identifier matches have confidence 1.0; name-based matches < 1.0",
+          "Identifier and analyst-confirmed matches have confidence 1.0; automatic name-based "
+          "matches < 1.0",
           sql="""SELECT count(*) FROM company_sanction_matches WHERE
-                 (match_method IN ('LEI_IDENTIFIER', 'REGISTRATION_NUMBER') AND confidence <> 1.0)
+                 (match_method IN ('LEI_IDENTIFIER', 'REGISTRATION_NUMBER', 'ANALYST_CONFIRMED')
+                  AND confidence <> 1.0)
                  OR (match_method IN ('FUZZY_NAME', 'LLM_ADJUDICATED')
                      AND NOT (confidence > 0 AND confidence < 1.0))"""),
     Check("matches_have_evidence", "company_sanction_matches", ERROR,
@@ -139,6 +142,23 @@ CHECKS: list[Check] = [
               "AND (drivers IS NULL OR NOT json_valid(drivers) OR json_array_length(drivers) = 0)"),
     Check("risk_covers_companies", "company_risk", ERROR, "Every company has a risk row",
           sql="SELECT count(*) FROM companies c ANTI JOIN company_risk r USING (lei)"),
+    Check("actions_valid", "analyst_actions", ERROR,
+          "Analyst actions have a known type and status, a reason and evidence",
+          sql="""SELECT count(*) FROM analyst_actions WHERE
+                 action NOT IN ('flag_supplier', 'request_review', 'confirm_match',
+                                'dismiss_match')
+                 OR status NOT IN ('proposed', 'approved', 'rejected')
+                 OR reason IS NULL OR trim(reason) = '' OR proposed_by IS NULL
+                 OR evidence IS NULL OR NOT json_valid(evidence)
+                 OR json_array_length(evidence) = 0"""),
+    Check("actions_decisions_audited", "analyst_actions", ERROR,
+          "Every approved or rejected action records who decided and when",
+          sql="""SELECT count(*) FROM analyst_actions WHERE status <> 'proposed'
+                 AND (decided_by IS NULL OR trim(decided_by) = '' OR decided_at IS NULL)"""),
+    Check("actions_reference_known_companies", "analyst_actions", WARN,
+          "Open and approved actions point at companies still in the graph",
+          sql="""SELECT count(*) FROM analyst_actions a ANTI JOIN companies c USING (lei)
+                 WHERE a.status <> 'rejected'"""),
     Check("company_news_references_valid", "company_news", ERROR,
           "News links point from watchlist companies to existing events",
           sql="""SELECT count(*) FROM company_news n

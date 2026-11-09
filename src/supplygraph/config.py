@@ -54,6 +54,15 @@ class Settings:
     def warehouse_path(self) -> Path:
         return self.data_dir / "warehouse.duckdb"
 
+    @property
+    def actions_log(self) -> Path:
+        """Append-only audit log of proposed / approved / rejected analyst actions."""
+        return self.data_dir / "actions" / "events.jsonl"
+
+    @property
+    def agent_sessions_dir(self) -> Path:
+        return self.data_dir / "agent_sessions"
+
 
 def load_settings() -> Settings:
     load_dotenv()

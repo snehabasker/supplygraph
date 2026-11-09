@@ -1,0 +1,17 @@
+{
+ "now": "2026-11-08T04:20:27.343045+01:00",
+ "tables": {
+  "companies": 278,
+  "ownership": 239,
+  "sanctions": 3,
+  "company_sanction_matches": 1,
+  "er_candidates": 2,
+  "filings": 12,
+  "supplier_mentions": 51,
+  "supply_links": 30,
+  "watchlist": 20,
+  "news_events": 14,
+  "company_news": 14,
+  "company_risk": 278
+ }
+}

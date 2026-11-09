@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import getpass
 import json
 import logging
 import sys
@@ -208,6 +209,168 @@ def evaluate_risk(out: Path = typer.Option(Path("data/risk_eval_report.json"))) 
     for name, m in lp["methods"].items():
         typer.echo(f"{name:<14}{m['mrr']:>7.3f}{m['hit@1']:>8.3f}{m['hit@3']:>8.3f}")
     typer.echo(f"Full report -> {out}")
+
+
+def _claude(call):
+    """Run a Claude-backed pipeline step; turn setup/billing errors into one clear line."""
+    import anthropic
+
+    try:
+        return call()
+    except anthropic.APIStatusError as exc:
+        body = exc.body if isinstance(exc.body, dict) else {}
+        detail = (body.get("error") or {}).get("message") or str(exc)
+        typer.echo(f"Claude API error ({exc.status_code}): {detail}", err=True)
+    except TypeError as exc:  # raised by the SDK when no credentials are configured
+        if "authentication" not in str(exc):
+            raise
+        typer.echo("No Claude credentials: set ANTHROPIC_API_KEY in .env (API usage needs "
+                   "prepaid API credit; a claude.ai subscription does not cover it).", err=True)
+    raise typer.Exit(code=2)
+
+
+@app.command()
+def ask(
+    question: str = typer.Argument(..., help="A question about the supplier-risk graph."),
+    read_only: bool = typer.Option(False, "--read-only", help="Don't offer action tools."),
+    effort: str = typer.Option("medium", help="Claude effort: low, medium, high, xhigh."),
+) -> None:
+    """Ask the graph agent (Claude + read-only graph tools). Answers cite graph refs;
+    any action it takes is only a proposal awaiting `supplygraph actions approve`."""
+    settings = load_settings()
+    result = _claude(lambda: pipeline.ask(settings, question, allow_actions=not read_only,
+                                          effort=effort))
+    if result.error:
+        typer.echo(f"ERROR: {result.error}", err=True)
+    typer.echo(result.answer or "(no answer)")
+    typer.echo(f"\n--- session {result.session_id}: {len(result.tool_calls)} tool calls, "
+               f"{len(result.citations)} citations")
+    if result.ungrounded:
+        typer.echo(f"WARNING: cited refs no tool returned (treat as unverified): "
+                   f"{', '.join(result.ungrounded)}", err=True)
+    for p in result.proposals:
+        what = f"{p['action']} {p['lei']}"
+        if p["sanction_id"]:
+            what += f" / {p['sanction_id']}"
+        state = "proposed" if p["created"] else f"already {p['status']}"
+        typer.echo(f"ACTION {p['action_id']} {state}: {what}  "
+                   f"(supplygraph actions approve {p['action_id']})")
+    typer.echo(f"Transcript -> {settings.agent_sessions_dir / (result.session_id + '.json')}")
+    if result.error:
+        raise typer.Exit(code=1)
+
+
+actions_app = typer.Typer(help="Review the agent's proposed actions (audited).",
+                          no_args_is_help=True)
+app.add_typer(actions_app, name="actions")
+
+
+@actions_app.command("list")
+def actions_list(
+    status: str | None = typer.Option(None, help="proposed, approved or rejected."),
+) -> None:
+    """List actions with their status and audit trail."""
+    rows = pipeline.list_actions(load_settings(), status)
+    if not rows:
+        typer.echo("No actions.")
+    for a in rows:
+        target = a.lei + (f" / {a.sanction_id}" if a.sanction_id else "")
+        typer.echo(f"{a.action_id}  {a.status:<9} {a.action:<15} {target}")
+        typer.echo(f"    reason:   {a.reason}")
+        typer.echo(f"    evidence: {', '.join(a.evidence)}")
+        typer.echo(f"    proposed: {a.proposed_at} by {a.proposed_by}"
+                   + (f" (session {a.session_id})" if a.session_id else ""))
+        if a.decided_by:
+            typer.echo(f"    {a.status}: {a.decided_at} by {a.decided_by}"
+                       + (f" — {a.decision_note}" if a.decision_note else ""))
+
+
+def _decide(action_id: str, approve: bool, by: str | None, note: str | None) -> None:
+    from supplygraph.agent.actions import ActionError
+
+    try:
+        a = pipeline.decide_action(load_settings(), action_id, approve,
+                                   by or getpass.getuser(), note)
+    except ActionError as exc:
+        typer.echo(f"ERROR: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"{a.action_id} {a.status} by {a.decided_by}: {a.action} {a.lei}"
+               + (f" / {a.sanction_id}" if a.sanction_id else ""))
+    if approve:
+        step = "resolve" if a.sanction_id else "build"
+        typer.echo(f"Takes effect at the next `supplygraph {step}` "
+                   f"(then score-risk and load-graph).")
+
+
+@actions_app.command("approve")
+def actions_approve(
+    action_id: str,
+    by: str | None = typer.Option(None, help="Analyst name (default: OS user)."),
+    note: str | None = typer.Option(None),
+) -> None:
+    """Approve a proposed action (re-checks its precondition against current data)."""
+    _decide(action_id, True, by, note)
+
+
+@actions_app.command("reject")
+def actions_reject(
+    action_id: str,
+    note: str = typer.Option(..., help="Why the proposal is rejected."),
+    by: str | None = typer.Option(None, help="Analyst name (default: OS user)."),
+) -> None:
+    """Reject a proposed action."""
+    _decide(action_id, False, by, note)
+
+
+@app.command("build-agent-fixture")
+def build_agent_fixture(eval_dir: Path = typer.Option(DEFAULT_EVAL_DIR / "agent")) -> None:
+    """Snapshot the warehouse into the agent eval fixture (then re-check the cases)."""
+    counts = pipeline.build_agent_fixture(load_settings(), eval_dir)
+    typer.echo(f"Fixture -> {eval_dir / 'fixture'}: {counts}")
+    problems = pipeline.check_agent_eval_set(eval_dir)["problems"]
+    for p in problems:
+        typer.echo(f"STALE CASE: {p}", err=True)
+    if problems:
+        raise typer.Exit(code=1)
+
+
+@app.command("evaluate-agent")
+def evaluate_agent(
+    eval_dir: Path = typer.Option(DEFAULT_EVAL_DIR / "agent"),
+    case: list[str] | None = typer.Option(None, help="Only these case ids (repeatable)."),
+    effort: str = typer.Option("medium"),
+    check_only: bool = typer.Option(False, help="Offline: only check the gold is answerable."),
+    out: Path = typer.Option(Path("data/agent_eval_report.json")),
+) -> None:
+    """Run the agent eval suite on the frozen fixture (calls Claude once per case)."""
+    if check_only:
+        result = pipeline.check_agent_eval_set(eval_dir)
+        for p in result["problems"]:
+            typer.echo(f"PROBLEM: {p}", err=True)
+        typer.echo(f"{result['cases']} cases, {len(result['problems'])} problems")
+        if result["problems"]:
+            raise typer.Exit(code=1)
+        return
+
+    def progress(g: dict) -> None:
+        failed = [k for k, ok in g["checks"].items() if not ok]
+        typer.echo(f"  {'PASS' if g['passed'] else 'FAIL'}  {g['id']:<32}"
+                   f"{len(g['tool_calls']):>3} tools  {', '.join(failed)}")
+
+    report = _claude(lambda: pipeline.evaluate_agent(load_settings(), eval_dir, effort, case,
+                                                     on_case=progress))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(report, indent=2, ensure_ascii=False, default=str),
+                   encoding="utf-8")
+    s = report["summary"]
+    typer.echo(f"\n{report['model']} (effort {report['effort']}): {s['cases']} cases, "
+               f"pass rate {s['pass_rate']}")
+    typer.echo(f"citation recall {s['citation_recall']}  grounding {s['citation_grounding']}  "
+               f"action precision {s['action_precision']} recall {s['action_recall']}  "
+               f"unrequested-action cases {s['unrequested_action_cases']}")
+    for cat, m in s["by_category"].items():
+        typer.echo(f"  {cat:<18}{m['cases']:>3} cases  pass {m['pass_rate']}")
+    typer.echo(f"tokens: {s['tokens']}\nFull report (answers, failed checks) -> {out}")
 
 
 @app.command()

@@ -208,7 +208,8 @@ def build_supply_chain(con: duckdb.DuckDBPyConnection, sec_dir: Path) -> dict[st
 
 
 def build_watchlist(con: duckdb.DuckDBPyConnection, gleif_dir: Path) -> int:
-    """Companies we monitor: seeds, SEC filers and both ends of every *asserted* supplier link.
+    """Companies we monitor: seeds, SEC filers, both ends of every *asserted* supplier link,
+    and companies an analyst flagged (approved `flag_supplier` actions).
     POSSIBLE_SUPPLIER leads don't expand the watchlist: on real filings they put Microsoft
     and OpenAI (a partner and a customer) under supplier-disruption monitoring."""
     seeds_path = gleif_dir / "seeds.json"
@@ -216,7 +217,10 @@ def build_watchlist(con: duckdb.DuckDBPyConnection, gleif_dir: Path) -> int:
     con.execute("CREATE OR REPLACE TEMP TABLE _seeds (lei VARCHAR)")
     if seeds:
         con.executemany("INSERT INTO _seeds VALUES (?)", [[s] for s in seeds])
-    con.execute("""
+    flags = ("UNION ALL SELECT lei, 'analyst_flag' FROM analyst_actions "
+             "WHERE action = 'flag_supplier' AND status = 'approved'"
+             if table_exists(con, "analyst_actions") else "")
+    con.execute(f"""
         CREATE OR REPLACE TABLE watchlist AS
         SELECT lei, string_agg(DISTINCT reason, ';' ORDER BY reason) AS reasons FROM (
             SELECT lei, 'seed' AS reason FROM _seeds
@@ -225,6 +229,7 @@ def build_watchlist(con: duckdb.DuckDBPyConnection, gleif_dir: Path) -> int:
                       WHERE link_type = 'SUPPLIES'
             UNION ALL SELECT customer_lei, 'customer' FROM supply_links
                       WHERE link_type = 'SUPPLIES'
+            {flags}
         ) w SEMI JOIN companies c USING (lei)
         GROUP BY lei
     """)
@@ -297,6 +302,7 @@ def build_all(
     sanctions_csv: Path,
     sec_dir: Path | None = None,
     gdelt_dir: Path | None = None,
+    actions_log: Path | None = None,
 ) -> dict:
     companies, ownership = build_gleif(con, gleif_dir)
     sanctions = build_sanctions(con, sanctions_csv)
@@ -307,6 +313,10 @@ def build_all(
         "sanctions": sanctions,
         "company_sanction_matches": matches,
     }
+    if actions_log is not None:  # before the watchlist: approved flags extend it
+        from supplygraph.agent.actions import build_actions_table
+
+        counts["analyst_actions"] = build_actions_table(con, actions_log)
     if sec_dir is not None:
         counts |= build_supply_chain(con, sec_dir)
         counts["watchlist"] = build_watchlist(con, gleif_dir)

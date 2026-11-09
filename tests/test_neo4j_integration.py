@@ -140,3 +140,36 @@ def test_uniqueness_constraint_is_enforced(driver, con) -> None:
     graph.load_graph(con, driver)
     with pytest.raises(ConstraintError):
         driver.execute_query("CREATE (:Company {lei: $lei})", lei=CLEAN)
+
+
+def test_approved_analyst_actions_load_and_reset(driver, tmp_path, con) -> None:
+    from supplygraph.agent.actions import (
+        FLAG_SUPPLIER,
+        REQUEST_REVIEW,
+        ActionStore,
+        build_actions_table,
+    )
+
+    store = ActionStore(tmp_path / "events.jsonl")
+    for action, lei in [(FLAG_SUPPLIER, CHILD), (REQUEST_REVIEW, CHILD), (FLAG_SUPPLIER, CLEAN)]:
+        a, _ = store.propose(con, action=action, lei=lei, sanction_id=None,
+                             reason="parent is sanctioned", evidence=[f"lei:{lei}"],
+                             proposed_by="agent:test")
+        if lei == CHILD:  # CLEAN's flag stays a proposal
+            store.decide(con, a.action_id, True, decided_by="ana")
+    build_actions_table(con, store.path)
+    graph.load_graph(con, driver)
+
+    def props(lei: str):
+        records, _, _ = driver.execute_query(
+            "MATCH (c:Company {lei: $lei}) RETURN c.analyst_flags AS f, "
+            "c.review_requested AS r", lei=lei)
+        return records[0]["f"], records[0]["r"]
+
+    assert props(CHILD) == ("parent is sanctioned", True)
+    assert props(CLEAN) == (None, False)
+
+    # Rebuilt without the approvals (e.g. a fresh log): the properties are cleared.
+    build_actions_table(con, tmp_path / "empty.jsonl")
+    graph.load_graph(con, driver)
+    assert props(CHILD) == (None, False)

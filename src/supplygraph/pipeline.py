@@ -102,7 +102,7 @@ def ingest_sanctions(settings: Settings) -> Path:
 def build(settings: Settings) -> dict[str, int]:
     with warehouse.connect(settings.warehouse_path) as con:
         return warehouse.build_all(con, settings.gleif_dir, settings.sanctions_csv,
-                                   settings.sec_dir, settings.gdelt_dir)
+                                   settings.sec_dir, settings.gdelt_dir, settings.actions_log)
 
 
 def resolve_entities(settings: Settings, use_llm: bool = False) -> dict[str, int]:
@@ -114,6 +114,10 @@ def resolve_entities(settings: Settings, use_llm: bool = False) -> dict[str, int
 
         adjudicator = ClaudeAdjudicator()
     with warehouse.connect(settings.warehouse_path) as con:
+        # Fold the action log first: a decision approved since the last build applies now.
+        from supplygraph.agent.actions import build_actions_table
+
+        build_actions_table(con, settings.actions_log)
         return resolve(con, adjudicator)
 
 
@@ -193,6 +197,91 @@ def evaluate_risk(settings: Settings) -> dict:
     with warehouse.connect(settings.warehouse_path) as con:
         return {"sensitivity": engine.sensitivity(con),
                 "link_prediction": linkpred.leave_one_out(linkpred.load_links(con))}
+
+
+def _read_only(settings: Settings):
+    if not settings.warehouse_path.exists():
+        raise FileNotFoundError(f"{settings.warehouse_path} not found; run the pipeline first")
+    import duckdb
+
+    return duckdb.connect(str(settings.warehouse_path), read_only=True)
+
+
+def ask(settings: Settings, question: str, allow_actions: bool = True,
+        effort: str = "medium", client=None):
+    """One agent session against the warehouse. Proposals go to the action log, unapplied."""
+    from supplygraph.agent.actions import ActionStore
+    from supplygraph.agent.agent import Agent
+
+    store = ActionStore(settings.actions_log) if allow_actions else None
+    with _read_only(settings) as con:
+        agent = Agent(con, store=store, client=client, effort=effort,
+                      sessions_dir=settings.agent_sessions_dir)
+        return agent.ask(question)
+
+
+def list_actions(settings: Settings, status: str | None = None) -> list:
+    from supplygraph.agent.actions import ActionStore
+
+    actions = ActionStore(settings.actions_log).actions()
+    return [a for a in actions if status is None or a.status == status]
+
+
+def decide_action(settings: Settings, action_id: str, approve: bool, decided_by: str,
+                  note: str | None = None):
+    """A human approves or rejects a proposal. Takes effect at the next build / resolve."""
+    from supplygraph.agent.actions import ActionStore
+
+    with _read_only(settings) as con:
+        return ActionStore(settings.actions_log).decide(con, action_id, approve, decided_by,
+                                                        note)
+
+
+def build_agent_fixture(settings: Settings, eval_dir: Path) -> dict[str, int]:
+    from supplygraph.agent.evaluate import build_fixture
+
+    with _read_only(settings) as con:
+        return build_fixture(con, eval_dir / "fixture")
+
+
+def _agent_eval_inputs(eval_dir: Path):
+    from supplygraph.agent.evaluate import load_cases, load_fixture
+
+    con, now = load_fixture(eval_dir / "fixture", eval_dir / "planted.json")
+    return load_cases(eval_dir / "cases.jsonl"), con, now
+
+
+def check_agent_eval_set(eval_dir: Path) -> dict:
+    """Offline: every case's gold citations are retrievable by its oracle tool calls."""
+    from supplygraph.agent.evaluate import oracle_problems
+
+    cases, con, now = _agent_eval_inputs(eval_dir)
+    with con:
+        return {"cases": len(cases), "problems": oracle_problems(cases, con, now)}
+
+
+def evaluate_agent(settings: Settings, eval_dir: Path, effort: str = "medium",
+                   case_ids: list[str] | None = None, client=None, on_case=None) -> dict:
+    import os
+
+    from supplygraph.agent.agent import DEFAULT_MODEL, Agent
+    from supplygraph.agent.evaluate import evaluate, oracle_problems
+
+    cases, con, now = _agent_eval_inputs(eval_dir)
+    if case_ids:
+        unknown = set(case_ids) - {c["id"] for c in cases}
+        if unknown:
+            raise ValueError(f"unknown case ids: {sorted(unknown)}")
+        cases = [c for c in cases if c["id"] in set(case_ids)]
+    model = os.getenv("SUPPLYGRAPH_LLM_MODEL", DEFAULT_MODEL)
+    with con:
+        problems = oracle_problems(cases, con, now)
+        if problems:
+            raise ValueError("eval set is inconsistent with its fixture: " + "; ".join(problems))
+        report = evaluate(cases, con, lambda store: Agent(
+            con, store=store, client=client, model=model, effort=effort, now=now,
+            sessions_dir=settings.agent_sessions_dir / "eval"), on_case=on_case)
+    return {"model": model, "effort": effort, **report}
 
 
 def check(settings: Settings) -> list[quality.CheckResult]:

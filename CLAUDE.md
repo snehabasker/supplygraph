@@ -42,6 +42,15 @@
 - A learned link-prediction model only ships if it beats the popularity baseline in
   `risk/linkpred.leave_one_out`.
 
+## Agent (Q&A + actions)
+- Any change to `agent/` (tools, prompt, loop) must be followed by `supplygraph evaluate-agent`
+  (needs Claude credentials); report pass rate, grounding and unrequested-action deltas and read
+  the failed answers. `evaluate-agent --check-only` (offline) must always pass.
+- Never edit `eval/agent/cases.jsonl` to make a number go up; `build-agent-fixture` re-snapshots
+  the fixture and requires fixing the stale cases it lists. `planted.json` holds synthetic rows.
+- The agent only *proposes* actions; never add a tool that applies one. Approved actions are
+  applied by `build` / `resolve` from `data/actions/events.jsonl` (append-only; never rewrite it).
+
 ## Rules
 - `docs/ontology.md` is the contract. Changing an object/link type means updating it first.
 - All pipeline steps must be idempotent (CREATE OR REPLACE in DuckDB, MERGE in Neo4j).

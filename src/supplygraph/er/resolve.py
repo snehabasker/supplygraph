@@ -6,6 +6,12 @@ Decision policy for each company's best candidate:
     review <= score < auto_match   -> LLM decides (LLM_ADJUDICATED), or NEEDS_REVIEW if no LLM
                                       or the LLM call fails
     score < review                 -> ignored
+
+Approved analyst actions (docs/ontology.md, "Actions") override all of the above for their
+pair: `confirm_match` -> MATCH (ANALYST_CONFIRMED, confidence 1.0), `dismiss_match` ->
+NO_MATCH (ANALYST_DISMISSED). They are applied before the LLM is consulted, so a human
+decision is never re-adjudicated, and a confirmed pair stays matched even if it is no longer
+the company's best fuzzy candidate.
 """
 
 from __future__ import annotations
@@ -16,6 +22,7 @@ from dataclasses import dataclass
 
 import duckdb
 
+from supplygraph.agent.actions import CONFIRM_MATCH, approved_match_decisions
 from supplygraph.er.adjudicate import Adjudicator, Decision
 from supplygraph.er.matcher import Candidate, Matcher, MatcherConfig, Party
 from supplygraph.warehouse import IDENTIFIER_METHODS, ORG_SCHEMAS
@@ -124,6 +131,19 @@ class CachedAdjudicator:
         return decision
 
 
+ANALYST_CONFIRMED = "ANALYST_CONFIRMED"
+ANALYST_DISMISSED = "ANALYST_DISMISSED"
+
+
+def analyst_decision(human: dict, score: float | None) -> tuple[str, str, float, str]:
+    """An approved confirm/dismiss action -> (decision, method, confidence, reasoning)."""
+    note = (f"{human['reason']} (analyst action {human['action_id']}, approved by "
+            f"{human['decided_by']} at {human['decided_at']})")
+    if human["action"] == CONFIRM_MATCH:
+        return MATCH, ANALYST_CONFIRMED, 1.0, note  # human-verified, like an identifier
+    return NO_MATCH, ANALYST_DISMISSED, score if score is not None else 0.0, note
+
+
 def decide(
     candidate: Candidate,
     thresholds: Thresholds,
@@ -169,14 +189,27 @@ def resolve(
 
     matcher = Matcher(sanctions, cfg)
     unresolved = [c for c in companies if c.id not in resolved]
+    analyst = approved_match_decisions(con)
     rows = []
     for cand in best_candidates(unresolved, matcher, thresholds.review):
-        decision, method, confidence, reasoning = decide(
-            cand, thresholds, adjudicator, by_company[cand.left_id], by_sanction[cand.right_id]
-        )
+        human = analyst.get((cand.left_id, cand.right_id))
+        if human is not None:
+            decision, method, confidence, reasoning = analyst_decision(human, cand.score)
+        else:
+            decision, method, confidence, reasoning = decide(
+                cand, thresholds, adjudicator, by_company[cand.left_id],
+                by_sanction[cand.right_id])
         rows.append([cand.left_id, cand.right_id, cand.score, cand.name_score,
                      cand.country_relation, cand.left_name, cand.right_name,
                      decision, method, confidence, reasoning])
+    # Confirmed pairs that are no longer a company's best candidate keep their match.
+    seen = {(r[0], r[1]) for r in rows}
+    for (lei, sid), human in sorted(analyst.items()):
+        if (human["action"] == CONFIRM_MATCH and (lei, sid) not in seen and lei not in resolved
+                and lei in by_company and sid in by_sanction):
+            decision, method, confidence, reasoning = analyst_decision(human, None)
+            rows.append([lei, sid, None, None, None, by_company[lei].names[0],
+                         by_sanction[sid].names[0], decision, method, confidence, reasoning])
 
     con.execute("""
         CREATE OR REPLACE TABLE er_candidates (
@@ -195,7 +228,8 @@ def resolve(
     )
     matches = [
         [r[0], r[1], r[8], r[9],
-         json.dumps({"company_name": r[5], "sanction_name": r[6], "score": round(r[2], 4),
+         json.dumps({"company_name": r[5], "sanction_name": r[6],
+                     "score": round(r[2], 4) if r[2] is not None else None,
                      "country_relation": r[4], "reasoning": r[10]}, ensure_ascii=False)]
         for r in rows if r[7] == MATCH
     ]
@@ -206,8 +240,10 @@ def resolve(
         "candidates": len(rows),
         "fuzzy_matches": sum(r[7] == MATCH and r[8] == "FUZZY_NAME" for r in rows),
         "llm_matches": sum(r[7] == MATCH and r[8] == "LLM_ADJUDICATED" for r in rows),
-        "llm_rejections": sum(r[7] == NO_MATCH for r in rows),
+        "llm_rejections": sum(r[7] == NO_MATCH and r[8] == "LLM_ADJUDICATED" for r in rows),
         "needs_review": sum(r[7] == REVIEW for r in rows),
+        "analyst_confirmed": sum(r[8] == ANALYST_CONFIRMED for r in rows),
+        "analyst_dismissed": sum(r[8] == ANALYST_DISMISSED for r in rows),
     }
     if isinstance(adjudicator, CachedAdjudicator):
         counts["llm_calls"] = adjudicator.calls

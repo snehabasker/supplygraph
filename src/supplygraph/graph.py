@@ -42,6 +42,14 @@ MATCH (c:Company) WHERE c.lei IN $leis
 SET c.watchlist = c.lei IN $watch
 """
 
+# Approved analyst actions on companies (docs/ontology.md, "Actions"); reset for the rest.
+SET_ANALYST = """
+MATCH (c:Company) WHERE c.lei IN $leis
+WITH c, [r IN $rows WHERE r.lei = c.lei][0] AS r
+SET c.analyst_flags = CASE WHEN r IS NULL THEN null ELSE r.flags END,
+    c.review_requested = coalesce(r.review_requested, false)
+"""
+
 SET_RISK = """
 UNWIND $rows AS r
 MATCH (c:Company {lei: r.lei})
@@ -186,6 +194,18 @@ def load_graph(con: duckdb.DuckDBPyConnection, driver: Driver, batch_size: int =
     }
     counts |= _load_supply_chain(con, driver, leis, batch_size)
     counts |= _load_news(con, driver, leis, batch_size)
+    if table_exists(con, "analyst_actions"):
+        rows = fetch_dicts(con, """
+            SELECT lei,
+                   string_agg(reason, ' | ' ORDER BY decided_at)
+                       FILTER (WHERE action = 'flag_supplier') AS flags,
+                   bool_or(action = 'request_review') AS review_requested
+            FROM analyst_actions
+            WHERE status = 'approved' AND action IN ('flag_supplier', 'request_review')
+            GROUP BY lei
+        """)
+        driver.execute_query(SET_ANALYST, leis=leis, rows=rows)
+        counts["analyst_flagged"] = sum(1 for r in rows if r["flags"])
     if table_exists(con, "company_risk"):
         risk = fetch_dicts(con, "SELECT lei, risk_score, own_risk, inherited_risk, drivers "
                                 "FROM company_risk")
