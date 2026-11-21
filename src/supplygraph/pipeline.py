@@ -191,6 +191,23 @@ def risk_scenario(settings: Settings, company: str, severity: float = 1.0) -> di
                 "impacted": engine.scenario(con, lei, severity)}
 
 
+def twin_scenario(settings: Settings, company: str, severity: float = 1.0, duration: int = 14,
+                  recovery_days: int = 7, inventory_days: float = 10.0, days: int = 60) -> dict:
+    """Day-by-day digital-twin simulation of a disruption at `company`."""
+    from supplygraph.risk import engine, twin
+
+    with warehouse.connect(settings.warehouse_path) as con:
+        lei, name = find_company(con, company)
+        names = engine.company_names(con)
+        shock = twin.Disruption(lei, severity, 0, duration, recovery_days)
+        result = twin.simulate(engine.load_edges(con), [shock], days, inventory_days)
+    impacted = [dict(r, name=names.get(r["lei"])) for r in result.impacted() if r["lei"] != lei]
+    return {"lei": lei, "name": name, "severity": severity, "duration": duration,
+            "recovery_days": recovery_days, "inventory_days": inventory_days, "days": days,
+            "impacted": impacted,
+            "timeline": {r["lei"]: result.capacity[r["lei"]] for r in impacted}}
+
+
 def evaluate_risk(settings: Settings) -> dict:
     from supplygraph.risk import engine, linkpred
 
