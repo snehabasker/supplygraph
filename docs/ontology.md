@@ -17,7 +17,9 @@ lists the signals and link paths that produced it (see [risk.md](risk.md)).
 `Company.watchlist` is true for companies SupplyGraph monitors: the seeds, the SEC filers and
 both ends of every asserted `SUPPLIES` link (`POSSIBLE_SUPPLIER` leads don't count). Only
 watchlist companies are matched against news. `NewsEvent.copies` counts syndicated copies
-merged into the event.
+merged into the event: identical headlines, plus rewritten headlines of one story clustered
+by TF-IDF similarity (precision ~0.90 on the labelled pairs; see
+[news-clustering.md](news-clustering.md)).
 
 `NewsEvent.event_types` ⊆ `NATURAL_DISASTER`, `LABOR_STRIKE`, `SHORTAGE`, `SANCTIONS`,
 `CYBER_ATTACK`, `FIRE`, `INDUSTRIAL_ACCIDENT`, `POWER_OUTAGE`, `BLOCKADE`, `BANKRUPTCY`

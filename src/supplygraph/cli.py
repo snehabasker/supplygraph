@@ -186,6 +186,59 @@ def scenario(
                    f"[{', '.join(r['relations'])}]")
 
 
+@app.command()
+def twin(
+    company: str = typer.Argument(..., help="LEI, legal name or short name, e.g. TSMC."),
+    severity: float = typer.Option(1.0, min=0.0, max=1.0, help="Share of capacity lost."),
+    duration: int = typer.Option(14, min=0, help="Days at reduced capacity."),
+    recovery: int = typer.Option(7, min=0, help="Days to ramp back to full capacity."),
+    inventory: float = typer.Option(10.0, min=0.0, help="Days of input stock per company."),
+    days: int = typer.Option(60, min=1, help="Simulation horizon."),
+    top: int = typer.Option(15, min=1),
+    out: Path | None = typer.Option(None, help="Write the full timeline as JSON."),
+) -> None:
+    """Digital twin: simulate a disruption at COMPANY day by day, with inventory buffers."""
+    r = pipeline.twin_scenario(load_settings(), company, severity, duration, recovery,
+                               inventory, days)
+    typer.echo(f"Twin: {r['name']} loses {severity:.0%} capacity for {duration}d "
+               f"(+{recovery}d recovery), {inventory:g}d inventory, {days}d horizon: "
+               f"{len(r['impacted'])} downstream companies hit")
+    for i in r["impacted"][:top]:
+        so = f"stockout day {i['stockout_day']}" if i["stockout_day"] is not None else "no stockout"
+        typer.echo(f"  day {i['first_impact_day']:>3}  min {i['min_capacity']:.0%}  "
+                   f"{i['days_impacted']:>3}d hit  {so:<16} {i['name']}")
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(r, indent=2, ensure_ascii=False), encoding="utf-8")
+        typer.echo(f"Timeline written to {out}")
+
+
+@app.command("evaluate-news-clusters")
+def evaluate_news_clusters(
+    eval_dir: Path = typer.Option(Path("eval/news")),
+    out: Path = typer.Option(Path("data/news_cluster_eval_report.json")),
+) -> None:
+    """Story-clustering precision/recall on labelled headline pairs (dev-tuned, test-reported)."""
+    from supplygraph import news_cluster
+
+    report = news_cluster.evaluate(eval_dir / "events.jsonl", eval_dir / "gold_pairs.csv")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    lab = report["labelled"]
+    typer.echo(f"{report['events']} events; labelled pairs dev={lab['dev']['pairs']} "
+               f"test={lab['test']['pairs']} (stratified sample, not the natural mix)")
+    typer.echo(f"{'system':<24}{'thr':>6}{'P(test)':>9}{'R(test)':>9}{'F1':>7}")
+    for name, m in report["systems"].items():
+        t = m["test"]
+        thr = "-" if m["threshold"] is None else f"{m['threshold']:.2f}"
+        typer.echo(f"{name:<24}{thr:>6}{t['precision']:>9.3f}{t['recall']:>9.3f}{t['f1']:>7.3f}")
+    errs = report["test_errors"]
+    typer.echo(f"\nTest false merges ({len(errs['false_merges'])}):")
+    for a, b in errs["false_merges"]:
+        typer.echo(f"  {a[:70]}  <>  {b[:70]}")
+    typer.echo(f"Full report -> {out}")
+
+
 @app.command("evaluate-risk")
 def evaluate_risk(out: Path = typer.Option(Path("data/risk_eval_report.json"))) -> None:
     """Weight-sensitivity of the risk ranking, and supplier link-prediction baselines."""

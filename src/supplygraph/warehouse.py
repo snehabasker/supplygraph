@@ -263,10 +263,12 @@ def dedupe_syndicated(events: list[dict]) -> list[dict]:
 
 def build_news(con: duckdb.DuckDBPyConnection, gdelt_dir: Path, sec_dir: Path) -> dict[str, int]:
     from supplygraph.news import match_events
+    from supplygraph.news_cluster import merge_stories
 
     events_path = gdelt_dir / "events.jsonl"
     raw_events = _read_jsonl(events_path) if events_path.exists() else []
-    events = dedupe_syndicated(raw_events)
+    deduped = dedupe_syndicated(raw_events)
+    events = merge_stories(deduped)  # near-duplicate headlines of one story
     columns = ", ".join(f"{name} {kind}" for name, kind in NEWS_COLUMNS.items())
     con.execute(f"CREATE OR REPLACE TABLE news_events ({columns})")
     if events:
@@ -290,9 +292,10 @@ def build_news(con: duckdb.DuckDBPyConnection, gdelt_dir: Path, sec_dir: Path) -
                 "(lei VARCHAR, event_id VARCHAR, matched_name VARCHAR)")
     if links:
         con.executemany("INSERT INTO company_news VALUES (?, ?, ?)", links)
-    log.info("news_events=%d (%d raw) company_news=%d (%s)", len(events), len(raw_events),
-             len(links), stats)
+    log.info("news_events=%d (%d raw, %d after exact-title dedupe) company_news=%d (%s)",
+             len(events), len(raw_events), len(deduped), len(links), stats)
     return {"news_events": len(events), "raw_news_events": len(raw_events),
+            "news_events_after_title_dedupe": len(deduped),
             "company_news": len(links), **stats}
 
 
