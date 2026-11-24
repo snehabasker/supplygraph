@@ -79,6 +79,24 @@ news_raw ───────────────────────�
 - Network assets retry twice with exponential backoff.
 - Schedules start **stopped**; turn them on in the UI.
 
+### Background jobs (Celery + Redis)
+
+On-demand work goes through a Celery queue, so callers don't wait on it. The two jobs are
+re-running entity resolution (for example after an analyst decision) and re-embedding
+sanctions names into pgvector. Tasks are thin wrappers over `pipeline.py`. Jobs that write
+the warehouse run one at a time, because DuckDB has a single writer. A lock held by another
+process is retried with backoff instead of failing the job.
+See [ADR 0015](docs/adr/0015-celery-background-jobs.md).
+
+```powershell
+pip install -e .[worker]
+docker compose up -d --wait redis
+supplygraph worker                              # serves the warehouse + vectors queues
+supplygraph enqueue index-vectors --wait        # 25,336 orgs / 87,461 names -> pgvector
+supplygraph enqueue resolve                     # prints a task id
+supplygraph job <task-id>                       # PENDING / STARTED / RETRY / SUCCESS / FAILURE
+```
+
 ### Try it in Neo4j Browser
 
 ```cypher
@@ -297,6 +315,7 @@ Neo4j service container on every push and PR.
 - [x] **M8 — Deploy:** container image, Helm chart (API + pipeline CronJob with atomic publish), API token auth, health/readiness probes, Prometheus metrics and alerts, JSON logs, 12 ADRs, demo walkthrough
 
 - [x] **M10 — Eval ops:** MLflow tracking for every evaluation, versioned and locked prompts, LLM-as-judge for agent answers (advisory, agreement with rules reported), pgvector candidate generation for ER (measured: no gain, root-caused; opt-in)
+- [x] **M11 — Background jobs:** a Celery + Redis worker for entity resolution and pgvector embedding, with a single writer for the warehouse, late acks and retries on lock conflicts (verified on real data)
 
 ## Data & licensing
 

@@ -623,5 +623,61 @@ def run_all(
         load_graph(batch_size=1000)
 
 
+def _worker_module():
+    """supplygraph.worker, or a clear error if the `worker` extra isn't installed."""
+    try:
+        from supplygraph import worker
+    except ModuleNotFoundError as exc:
+        typer.echo(f"Celery is not installed ({exc}); pip install -e .[worker]", err=True)
+        raise typer.Exit(code=1) from exc
+    return worker
+
+
+@app.command("worker")
+def run_worker(
+    queues: str = typer.Option("warehouse,vectors", help="Comma-separated: warehouse, vectors."),
+    concurrency: int = typer.Option(1, help="Task slots (the warehouse queue requires 1)."),
+    pool: str = typer.Option(None, help="Celery pool (default: solo on Windows, else prefork)."),
+) -> None:
+    """Run a Celery worker for background jobs (needs Redis, CELERY_BROKER_URL)."""
+    worker = _worker_module()
+    try:
+        argv = worker.worker_argv([q.strip() for q in queues.split(",") if q.strip()],
+                                  concurrency, pool)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+    worker.app.worker_main(argv)
+
+
+@app.command("enqueue")
+def enqueue(
+    job: str = typer.Argument(..., help="resolve | index-vectors"),
+    llm: bool = typer.Option(False, help="resolve: let Claude adjudicate the review band."),
+    wait: bool = typer.Option(False, help="Block until the job finishes and print its result."),
+    timeout: float = typer.Option(1800, help="Seconds to wait with --wait."),
+) -> None:
+    """Queue a background job; prints the task id (see `supplygraph job <id>`)."""
+    worker = _worker_module()
+    kwargs = {"use_llm": llm} if job == "resolve" else {}
+    try:
+        res = worker.submit(job, **kwargs)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo(res.id)
+    if wait:
+        res.get(timeout=timeout, propagate=False)  # wait; the outcome is read via status()
+        typer.echo(json.dumps(worker.status(res.id), indent=2, default=str))
+        if res.failed():
+            raise typer.Exit(code=1)
+
+
+@app.command("job")
+def job_status(task_id: str = typer.Argument(...)) -> None:
+    """State (PENDING / STARTED / RETRY / SUCCESS / FAILURE) and result of a background job."""
+    typer.echo(json.dumps(_worker_module().status(task_id), indent=2, default=str))
+
+
 if __name__ == "__main__":
     app()
