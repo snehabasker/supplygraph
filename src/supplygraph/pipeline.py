@@ -131,7 +131,11 @@ def build_eval_set(settings: Settings, eval_dir: Path) -> dict[str, int]:
         return build(con, client, eval_dir)
 
 
-def evaluate_entities(settings: Settings, eval_dir: Path, use_llm: bool = False) -> dict:
+def evaluate_entities(settings: Settings, eval_dir: Path, use_llm: bool = False,
+                      vectors: bool = False) -> dict:
+    """`vectors`: add pgvector nearest-neighbour candidates (needs PGVECTOR_DSN)."""
+    from contextlib import nullcontext
+
     from supplygraph.er.evaluate import evaluate
 
     adjudicator = None
@@ -139,8 +143,15 @@ def evaluate_entities(settings: Settings, eval_dir: Path, use_llm: bool = False)
         from supplygraph.er.adjudicate import ClaudeAdjudicator
 
         adjudicator = ClaudeAdjudicator()
-    with warehouse.connect(settings.warehouse_path) as con:
-        return evaluate(con, eval_dir, adjudicator=adjudicator)
+    index = nullcontext()
+    if vectors:
+        if not settings.pgvector_dsn:
+            raise ValueError("vector blocking needs PGVECTOR_DSN (see .env.example)")
+        from supplygraph.er.vectors import PgVectorIndex
+
+        index = PgVectorIndex(settings.pgvector_dsn)
+    with index as vector_index, warehouse.connect(settings.warehouse_path) as con:
+        return evaluate(con, eval_dir, adjudicator=adjudicator, vector_index=vector_index)
 
 
 def score_risk(settings: Settings) -> dict[str, int]:
@@ -278,7 +289,8 @@ def check_agent_eval_set(eval_dir: Path) -> dict:
 
 
 def evaluate_agent(settings: Settings, eval_dir: Path, effort: str = "medium",
-                   case_ids: list[str] | None = None, client=None, on_case=None) -> dict:
+                   case_ids: list[str] | None = None, client=None, on_case=None,
+                   judge=None) -> dict:
     import os
 
     from supplygraph.agent.agent import DEFAULT_MODEL, Agent
@@ -297,7 +309,8 @@ def evaluate_agent(settings: Settings, eval_dir: Path, effort: str = "medium",
             raise ValueError("eval set is inconsistent with its fixture: " + "; ".join(problems))
         report = evaluate(cases, con, lambda store: Agent(
             con, store=store, client=client, model=model, effort=effort, now=now,
-            sessions_dir=settings.agent_sessions_dir / "eval"), on_case=on_case)
+            sessions_dir=settings.agent_sessions_dir / "eval"), on_case=on_case,
+            judge=judge, now=now)
     return {"model": model, "effort": effort, **report}
 
 

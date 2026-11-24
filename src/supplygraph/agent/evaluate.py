@@ -27,14 +27,23 @@ from collections import defaultdict
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import duckdb
 
 from supplygraph.agent.actions import ActionError, ActionStore, validate
 from supplygraph.agent.agent import Agent, AgentResult
+from supplygraph.agent.judge import Judgement, agreement, replay_evidence
 from supplygraph.agent.tools import GraphTools, ToolError, collect_refs
 from supplygraph.warehouse import table_exists
+
+
+class Judge(Protocol):
+    model: str
+
+    def judge(self, question: str, answer: str, evidence: list[dict]) -> Judgement | None:
+        ...
+
 
 # Table -> rows to snapshot. Sanctions and news are restricted to what the graph references.
 FIXTURE_TABLES: dict[str, str] = {
@@ -220,16 +229,30 @@ def summarize(graded: list[dict]) -> dict:
 
 def evaluate(cases: list[dict], con: duckdb.DuckDBPyConnection,
              make_agent: Callable[[ActionStore], Agent],
-             on_case: Callable[[dict], None] | None = None) -> dict:
-    """Run every case in a fresh session with its own empty action log."""
+             on_case: Callable[[dict], None] | None = None,
+             judge: Judge | None = None, now: datetime | None = None) -> dict:
+    """Run every case in a fresh session with its own empty action log.
+
+    With a `judge`, each answer is also graded by an LLM against the evidence the agent
+    retrieved (replayed on the fixture); the pass rate stays rule-based (see agent/judge.py).
+    """
     graded = []
+    evidence_tools = GraphTools(con, now=now)
     with tempfile.TemporaryDirectory() as tmp:
         for case in cases:
             store = ActionStore(Path(tmp) / f"{case['id']}.jsonl")
-            g = grade(case, make_agent(store).ask(case["question"]))
+            result = make_agent(store).ask(case["question"])
+            g = grade(case, result)
+            if judge is not None:
+                verdict = judge.judge(case["question"], result.answer,
+                                      replay_evidence(evidence_tools, result.tool_calls))
+                g["judge"] = verdict.as_dict() if verdict else None
             graded.append(g)
             if on_case:
                 on_case(g)
-    report = {"summary": summarize(graded), "cases": [
+    summary = summarize(graded)
+    if judge is not None:
+        summary["judge"] = {"model": judge.model, **agreement(graded)}
+    report = {"summary": summary, "cases": [
         {k: v for k, v in g.items() if not k.startswith("_")} for g in graded]}
     return report

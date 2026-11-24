@@ -38,6 +38,7 @@ from supplygraph.er.resolve import (
     decide,
     load_sanction_parties,
 )
+from supplygraph.er.vectors import VectorIndex
 from supplygraph.ingest.gleif import GleifClient, compact_record, is_valid_lei, parse_record
 from supplygraph.warehouse import (
     ORG_SCHEMAS,
@@ -202,10 +203,11 @@ def top1_predictions(
     gold: dict[str, set[str]],
     cfg: MatcherConfig,
     min_score: float,
+    vector_index: VectorIndex | None = None,
 ) -> tuple[dict[str, Candidate | None], float]:
     """Top candidate per company, plus blocking recall over positives (is the gold record
     among the candidates at all? — an upper bound on achievable recall)."""
-    matcher = Matcher(sanctions, cfg)
+    matcher = Matcher(sanctions, cfg, vector_index)
     top1, found, positives = {}, 0, 0
     for lei, party in parties.items():
         cands = matcher.candidates(party, min_score)
@@ -227,6 +229,7 @@ def choose_thresholds(dev: list[Metrics], min_precision: float = 0.95) -> Thresh
     return Thresholds(auto_match=round(auto, 2), review=round(max(review, 0.5), 2))
 
 
+DEFAULT_VECTOR_K = 10  # nearest sanctions names per company name, when vectors are enabled
 THRESHOLD_GRID = tuple(round(0.60 + 0.01 * i, 2) for i in range(40))
 
 
@@ -235,8 +238,13 @@ def evaluate(
     eval_dir: Path,
     cfg: MatcherConfig | None = None,
     adjudicator: Adjudicator | None = None,
+    vector_index: VectorIndex | None = None,
 ) -> dict:
+    """With a `vector_index`, candidates come from token + vector blocking, and the report
+    adds `blocking_comparison`: token-only vs token+vector, each with dev-chosen thresholds."""
     cfg = cfg or MatcherConfig()
+    if vector_index is not None and cfg.vector_k == 0:
+        cfg = replace(cfg, vector_k=DEFAULT_VECTOR_K)
     parties, gold, splits = load_eval_set(eval_dir)
     sanctions = load_sanction_parties(con)
     live_ids = {p.id for p in sanctions}
@@ -252,7 +260,8 @@ def evaluate(
         return not cand.generic
 
     def run(config: MatcherConfig) -> dict:
-        top1, blocking_recall = top1_predictions(parties, sanctions, gold, config, min_score=0.5)
+        top1, blocking_recall = top1_predictions(parties, sanctions, gold, config, min_score=0.5,
+                                                 vector_index=vector_index)
         out: dict = {"blocking_recall": blocking_recall}
         for split in ("dev", "test"):
             sub = {lei: c for lei, c in top1.items() if splits[lei] == split}
@@ -273,6 +282,8 @@ def evaluate(
     review_band = [c for c in test_top1.values()
                    if c and c.score >= thresholds.review and not is_auto(c)]
     report: dict = {
+        "blocking": {"method": "token+vector" if cfg.vector_k else "token",
+                     "vector_k": cfg.vector_k},
         "companies": {s: {"positives": count(s, True), "negatives": count(s, False)}
                       for s in ("dev", "test")},
         "blocking_recall": round(main["blocking_recall"], 4),
@@ -316,6 +327,18 @@ def evaluate(
         ablated = run(variant)["test"]["top1"]
         ablations[name] = metrics_at(ablated, gold, thresholds.auto_match, auto_ok).as_dict()
     report["test_ablations_at_auto_threshold"] = ablations
+
+    if cfg.vector_k:
+        def summary(result: dict) -> dict:
+            chosen = choose_thresholds(result["dev"]["sweep"])
+            test = metrics_at(result["test"]["top1"], gold, chosen.auto_match, auto_ok)
+            return {"blocking_recall": round(result["blocking_recall"], 4),
+                    "thresholds": asdict(chosen), "test_auto_match": test.as_dict()}
+
+        report["blocking_comparison"] = {
+            "token_only": summary(run(replace(cfg, vector_k=0))),
+            "token_plus_vector": summary(main),
+        }
 
     if adjudicator is not None:
         cached = CachedAdjudicator(adjudicator, con)

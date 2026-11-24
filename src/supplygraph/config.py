@@ -28,6 +28,8 @@ class Settings:
     # the pipeline runs in a different data dir than the server (see deploy/), so both share
     # one audit log.
     actions_log_path: Path | None = None
+    # PostgreSQL + pgvector, for vector candidate generation in entity resolution (optional).
+    pgvector_dsn: str | None = None
 
     @property
     def raw_dir(self) -> Path:
@@ -78,4 +80,5 @@ def load_settings() -> Settings:
         opensanctions_url=os.getenv("OPENSANCTIONS_URL", DEFAULT_OPENSANCTIONS_URL),
         sec_user_agent=os.getenv("SEC_USER_AGENT") or None,
         actions_log_path=Path(p) if (p := os.getenv("SUPPLYGRAPH_ACTIONS_LOG")) else None,
+        pgvector_dsn=os.getenv("PGVECTOR_DSN") or None,
     )

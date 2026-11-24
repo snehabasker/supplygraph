@@ -9,6 +9,12 @@
 - Explorer UI: `cd web; npm test; npm run build` (typecheck + build), then `supplygraph serve`;
   API tests in `tests/test_api.py` run on the committed agent-eval fixture
 - Pipeline logic lives in `pipeline.py`; CLI and Dagster assets are thin wrappers — never duplicate logic.
+- Eval tracking: add `--track` to any `evaluate-*` (MLflow; `MLFLOW_TRACKING_URI`, default
+  `sqlite:///data/mlflow.db`). pgvector: `docker compose up -d --wait pgvector`, `PGVECTOR_DSN`.
+- Prompts: changing any LLM prompt, tool description or output schema means bumping that
+  module's `PROMPT_VERSION`, then `supplygraph prompts --update` (a test enforces it).
+- `evaluate-agent --judge` adds the LLM judge; it is advisory — never gate on it until its
+  disagreements with the rules have been labelled.
 - Neo4j: `docker compose up -d --wait`; queries via `docker exec -i supplygraph-neo4j cypher-shell` (pipe from bash, not PowerShell — PowerShell adds a BOM)
 
 ## Definition of done (every change)

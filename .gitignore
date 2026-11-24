@@ -12,3 +12,5 @@ build/
 
 # Pipeline outputs (reproducible from sources)
 data/
+mlruns/
+mlartifacts/

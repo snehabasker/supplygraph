@@ -1,0 +1,18 @@
+{
+  "agent.judge": {
+    "version": "v1",
+    "fingerprint": "71f7de48a623342e"
+  },
+  "agent.system": {
+    "version": "v1",
+    "fingerprint": "89388bf6291b6d30"
+  },
+  "er.adjudicate": {
+    "version": "v1",
+    "fingerprint": "a0fddf72b22b9326"
+  },
+  "extract.suppliers": {
+    "version": "v1",
+    "fingerprint": "b549cd066094e201"
+  }
+}

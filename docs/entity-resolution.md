@@ -78,11 +78,36 @@ reviewer (human or LLM) would lift recall to 0.872 at auto-match precision.
    (German *AG* stripped + subset scoring); "Siemens Aktiengesellschaft" looked like
    "EK-Company Aktiengesellschaft" (long legal forms not stripped). Each now has a regression test.
 
+### Vector candidate generation (pgvector): measured, no gain
+
+`evaluate-er --vectors` adds each company name's 10 nearest sanctions names to the token-blocking
+candidates. The vectors are hashed character trigrams in PostgreSQL + pgvector with an HNSW
+cosine index ([ADR 0014](adr/0014-pgvector-candidate-generation-opt-in.md)). Candidates are
+scored as before.
+
+| Test split, own dev thresholds | Blocking recall | Precision | Recall | False alarms |
+|---|---:|---:|---:|---:|
+| Token blocking (production) | 0.947 | 0.969 | 0.760 | 0.63 % |
+| Token + pgvector (k = 10) | 0.947 | 0.969 | 0.760 | 0.63 % |
+
+Reading the 13 positives that blocking misses (dev + test) explains the zero delta. Every one
+is a Chinese company whose GLEIF name is in Han characters only. Normalization reduces such a
+name to an empty string, so there is nothing to embed. The one exception is CATL, whose pinyin
+name ("ning de shi dai xin neng yuan …") shares no letters with "Contemporary Amperex
+Technology". The misses are a translation problem, not a spelling one. Vector blocking
+therefore stays opt-in and out of production `resolve`.
+
+```powershell
+docker compose up -d --wait pgvector     # PGVECTOR_DSN in .env (see .env.example)
+supplygraph evaluate-er --vectors --track
+```
+
 ### Known limitations
 
 - **Chinese-script names find no candidates** (9 test misses). Sanctions lists use English
-  names (e.g. CATL = 宁德时代), so this needs translation, not transliteration — a job for
-  LLM- or embedding-based candidate generation.
+  names (e.g. CATL = 宁德时代), so this needs translation, not transliteration. Lexical vectors
+  were tried and don't help (above). The next step is cross-lingual embeddings *plus* a
+  cross-lingual scorer, re-tuned on dev; the pgvector index can hold those vectors.
 - **Residual label noise:** both remaining test false alarms (Vympel-Communications, OZON Bank)
   have exact legal-name matches on sanctions records without identifiers — likely true matches
   the labels cannot confirm. True precision is probably higher than reported.

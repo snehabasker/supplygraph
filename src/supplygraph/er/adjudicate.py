@@ -27,6 +27,8 @@ log = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "claude-opus-5-5"
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
+# Bump when the prompt or MatchVerdict changes (checked against prompts.lock.json).
+PROMPT_VERSION = "v1"
 
 SYSTEM_PROMPT = """\
 You are a sanctions-screening analyst. Decide whether a company record from the GLEIF legal \

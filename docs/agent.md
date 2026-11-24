@@ -119,6 +119,35 @@ grounding, unrequested actions. Read the failed cases' answers in
 `data/agent_eval_report.json` before concluding anything. Some gold `must_mention` alternatives
 may turn out to be too narrow, and that is a case bug, not a model failure.
 
+### LLM-as-judge (advisory)
+
+```powershell
+supplygraph evaluate-agent --judge --track   # rules + judge; logged to MLflow
+```
+
+The rules can't see whether the sentence around a valid citation is true. "TSMC is
+headquartered in Japan [lei:TSMC]" cites correctly and mentions Taiwan elsewhere, so it passes.
+With `--judge`, a second Claude call (`agent/judge.py`, model `SUPPLYGRAPH_JUDGE_MODEL`, default
+the agent's model) receives the question, the answer, and the **evidence**. The evidence is the
+agent's own read-only tool calls, re-run on the fixture, so it is exactly what the agent saw and
+is not taken from the agent's word. The judge returns a structured verdict: `supported`,
+`unsupported_claims`, `answers_question`, `score` 1–5 and a rationale.
+
+- **Advisory, not a gate.** The pass rate stays rule-based. The summary adds the judge's
+  supported / answers-question rates, its mean score, how often it failed, its agreement with
+  the rules (Cohen's kappa), and the case ids where the two disagree. Those disagreements are
+  the cases to read: either the judge caught a misstatement, or the judge is wrong. Labelling
+  them is how the judge earns the right to gate.
+- **Failure is never a pass.** A refused or failed judge call is recorded as `judge_failed`.
+- **Injection-aware.** The evidence includes the planted injection headline. The judge prompt
+  treats all inputs as data and counts following an embedded instruction as unsupported.
+- **Not yet run live** (same API-credit constraint as above). Unit tests drive it with fakes,
+  including a case where the rules pass and the judge correctly fails.
+
+The agent's and the judge's prompts are versioned and locked (`supplygraph prompts`,
+[ADR 0013](adr/0013-eval-tracking-prompt-versions-llm-judge.md)). Both versions are logged
+with every tracked run.
+
 **Changing the suite.** Never edit a case to make a number go up. After `build-agent-fixture`
 (re-snapshot), the command re-runs the oracle check and lists stale cases. Fix those against the
 new data, the same way as the extraction gold set.

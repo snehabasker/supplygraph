@@ -253,7 +253,7 @@ helm test sg -n supplygraph
 - **Write protection.** Writes need an API token; without one, a deployed server is read-only.
 
 Verified on a kind cluster: install, `helm test`, token auth, and one real pipeline run. See
-[deploy/README.md](deploy/README.md) for the guide, [docs/adr/](docs/adr/) for the twelve
+[deploy/README.md](deploy/README.md) for the guide, [docs/adr/](docs/adr/) for the
 architecture decision records, and [docs/demo.md](docs/demo.md) for a five-minute walkthrough.
 
 ## Development
@@ -268,6 +268,20 @@ cd web; npm test; npm run build  # UI unit tests, typecheck, production build
 $env:SUPPLYGRAPH_INTEGRATION = "1"; pytest
 ```
 
+### Experiment tracking and prompt versions
+
+```powershell
+supplygraph evaluate-er --track          # any evaluate-* command; also --vectors (pgvector)
+mlflow ui --backend-store-uri sqlite:///data/mlflow.db
+supplygraph prompts                      # prompt versions vs prompts.lock.json
+```
+
+`--track` logs each evaluation to MLflow: the commit, model, prompt versions and thresholds as
+params, every report number as a metric, threshold sweeps as series, and the full report as an
+artifact. Every LLM prompt (agent, judge, ER adjudication, extraction) has a version and a
+fingerprint of its text, tool specs and output schema. A test fails if one changes without a
+version bump. See [ADR 0013](docs/adr/0013-eval-tracking-prompt-versions-llm-judge.md).
+
 CI (GitHub Actions) runs lint, Dagster definition validation, and all tests against a real
 Neo4j service container on every push and PR.
 
@@ -281,6 +295,8 @@ Neo4j service container on every push and PR.
 - [x] **M6 — Agent:** GraphRAG Q&A over graph tools with grounded citations, proposal-only audited actions applied by the pipeline, 22-case eval suite (built and tested; live eval score pending API credit, see docs/agent.md)
 - [x] **M7 — UI:** React + Cytoscape graph explorer, risk dashboard, scenario view, analyst decisions on agent proposals (`supplygraph serve`)
 - [x] **M8 — Deploy:** container image, Helm chart (API + pipeline CronJob with atomic publish), API token auth, health/readiness probes, Prometheus metrics and alerts, JSON logs, 12 ADRs, demo walkthrough
+
+- [x] **M10 — Eval ops:** MLflow tracking for every evaluation, versioned and locked prompts, LLM-as-judge for agent answers (advisory, agreement with rules reported), pgvector candidate generation for ER (measured: no gain, root-caused; opt-in)
 
 ## Data & licensing
 

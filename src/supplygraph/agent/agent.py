@@ -41,6 +41,8 @@ DEFAULT_MODEL = "claude-opus-5-5"
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 INSUFFICIENT = "INSUFFICIENT DATA"
 MAX_RESULT_CHARS = 20_000
+# Bump when the system prompt or a tool description changes (checked against prompts.lock.json).
+PROMPT_VERSION = "v1"
 
 SYSTEM_PROMPT = f"""\
 You are SupplyGraph's supplier-risk analyst assistant. You answer questions about companies, \

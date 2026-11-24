@@ -17,6 +17,28 @@ app = typer.Typer(help="SupplyGraph: supplier risk knowledge graph pipeline.", n
 DEFAULT_SEEDS = Path("seeds/companies.csv")
 DEFAULT_FILERS = Path("seeds/sec_filers.csv")
 DEFAULT_EVAL_DIR = Path("eval")
+TRACK_HELP = "Also log params, metrics and the report to MLflow (MLFLOW_TRACKING_URI)."
+
+
+def _track(name: str, report: dict, params: dict | None = None,
+           series: dict[str, list[tuple[int, float]]] | None = None) -> None:
+    """Log an evaluation run to MLflow (`pip install -e .[tracking]`)."""
+    import os
+
+    from supplygraph import tracking
+
+    settings = load_settings()
+    try:
+        run_id = tracking.log_eval(
+            name, report, params=params, series=series,
+            tracking_uri=tracking.default_tracking_uri(settings.data_dir),
+            # With a tracking server, the server decides where artifacts go.
+            artifact_root=None if os.getenv("MLFLOW_TRACKING_URI")
+            else settings.data_dir / "mlartifacts")
+    except ModuleNotFoundError as exc:
+        typer.echo(f"MLflow is not installed ({exc}); pip install -e .[tracking]", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"MLflow run {run_id} -> experiment {tracking.EXPERIMENT_PREFIX}/{name}")
 
 
 @app.callback()
@@ -98,6 +120,7 @@ def evaluate_extraction(
     eval_dir: Path = typer.Option(DEFAULT_EVAL_DIR / "extraction"),
     llm: bool = typer.Option(False, help="Also measure the Claude extractor."),
     out: Path = typer.Option(Path("data/extraction_eval_report.json")),
+    track: bool = typer.Option(False, help=TRACK_HELP),
 ) -> None:
     """Supplier-extraction precision/recall on the hand-labelled gold set."""
     report = pipeline.evaluate_extraction(load_settings(), eval_dir, use_llm=llm)
@@ -111,6 +134,14 @@ def evaluate_extraction(
         typer.echo(f"{name:<10}{m['precision']:>10.3f}{m['recall']:>8.3f}{m['f1']:>7.3f}"
                    f"{m['tp']:>5}{m['fp']:>5}{m['fn']:>5}{m['failed_passages']:>8}")
     typer.echo(f"Full report (false positives, misses) -> {out}")
+    if track:
+        import os
+
+        from supplygraph.extract.suppliers import DEFAULT_MODEL, PROMPT_VERSION
+
+        _track("extraction", report, {
+            "systems": sorted(report["systems"]), "prompt.extract.suppliers": PROMPT_VERSION,
+            "model": os.getenv("SUPPLYGRAPH_LLM_MODEL", DEFAULT_MODEL) if llm else None})
 
 
 @app.command()
@@ -140,10 +171,13 @@ def build_eval_set(eval_dir: Path = typer.Option(DEFAULT_EVAL_DIR)) -> None:
 def evaluate_er(
     eval_dir: Path = typer.Option(DEFAULT_EVAL_DIR),
     llm: bool = typer.Option(False, help="Also measure the hybrid matcher + Claude system."),
+    vectors: bool = typer.Option(False, help="Add pgvector nearest-neighbour candidates "
+                                             "(PGVECTOR_DSN) and compare with token blocking."),
     out: Path = typer.Option(Path("data/er_eval_report.json"), help="Full JSON report."),
+    track: bool = typer.Option(False, help=TRACK_HELP),
 ) -> None:
     """Measure entity-resolution precision/recall on the gold set (dev-tuned, test-reported)."""
-    report = pipeline.evaluate_entities(load_settings(), eval_dir, use_llm=llm)
+    report = pipeline.evaluate_entities(load_settings(), eval_dir, use_llm=llm, vectors=vectors)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
 
@@ -159,7 +193,32 @@ def evaluate_er(
     queue = report["test"]["review_queue"]
     typer.echo(f"\nReview queue (test): {queue['size']} items, "
                f"{queue['true_matches_in_queue']} true matches")
+    if "blocking_comparison" in report:
+        typer.echo(f"\n{'BLOCKING (test, own dev thresholds)':<38}{'blocking recall':>16}"
+                   f"{'precision':>10}{'recall':>8}{'false alarm':>13}")
+        for name, b in report["blocking_comparison"].items():
+            m = b["test_auto_match"]
+            typer.echo(f"{name:<38}{b['blocking_recall']:>16.3f}{m['precision']:>10.3f}"
+                       f"{m['recall']:>8.3f}{m['false_alarm_rate']:>13.3%}")
     typer.echo(f"Full report -> {out}")
+    if track:
+        from dataclasses import asdict
+
+        from supplygraph.er.matcher import MatcherConfig
+
+        params = {**{f"matcher.{k}": v for k, v in asdict(MatcherConfig()).items()},
+                  "blocking": report["blocking"]["method"],
+                  "matcher.vector_k": report["blocking"]["vector_k"],
+                  **{f"threshold.{k}": v for k, v in t.items()}}
+        if llm:
+            from supplygraph.er.adjudicate import PROMPT_VERSION
+
+            params.update({"model": report["test"]["hybrid_with_llm"]["model"],
+                           "prompt.er.adjudicate": PROMPT_VERSION})
+        sweep = report["dev_sweep"]
+        _track("entity_resolution", report, params, series={
+            f"dev_sweep.{k}": [(round(m["threshold"] * 100), m[k]) for m in sweep]
+            for k in ("precision", "recall", "f1")})
 
 
 @app.command("score-risk")
@@ -217,6 +276,7 @@ def twin(
 def evaluate_news_clusters(
     eval_dir: Path = typer.Option(Path("eval/news")),
     out: Path = typer.Option(Path("data/news_cluster_eval_report.json")),
+    track: bool = typer.Option(False, help=TRACK_HELP),
 ) -> None:
     """Story-clustering precision/recall on labelled headline pairs (dev-tuned, test-reported)."""
     from supplygraph import news_cluster
@@ -237,10 +297,16 @@ def evaluate_news_clusters(
     for a, b in errs["false_merges"]:
         typer.echo(f"  {a[:70]}  <>  {b[:70]}")
     typer.echo(f"Full report -> {out}")
+    if track:
+        _track("news_clusters", report, {f"threshold.{name}": m["threshold"]
+                                         for name, m in report["systems"].items()})
 
 
 @app.command("evaluate-risk")
-def evaluate_risk(out: Path = typer.Option(Path("data/risk_eval_report.json"))) -> None:
+def evaluate_risk(
+    out: Path = typer.Option(Path("data/risk_eval_report.json")),
+    track: bool = typer.Option(False, help=TRACK_HELP),
+) -> None:
     """Weight-sensitivity of the risk ranking, and supplier link-prediction baselines."""
     report = pipeline.evaluate_risk(load_settings())
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -256,6 +322,12 @@ def evaluate_risk(out: Path = typer.Option(Path("data/risk_eval_report.json"))) 
     for name, m in lp["methods"].items():
         typer.echo(f"{name:<14}{m['mrr']:>7.3f}{m['hit@1']:>8.3f}{m['hit@3']:>8.3f}")
     typer.echo(f"Full report -> {out}")
+    if track:
+        from dataclasses import asdict
+
+        from supplygraph.risk.engine import RiskConfig
+
+        _track("risk", report, {f"risk.{k}": v for k, v in asdict(RiskConfig()).items()})
 
 
 def _claude(call):
@@ -387,7 +459,10 @@ def evaluate_agent(
     case: list[str] | None = typer.Option(None, help="Only these case ids (repeatable)."),
     effort: str = typer.Option("medium"),
     check_only: bool = typer.Option(False, help="Offline: only check the gold is answerable."),
+    judge: bool = typer.Option(False, help="Also grade each answer with an LLM judge against "
+                                           "the evidence the agent retrieved."),
     out: Path = typer.Option(Path("data/agent_eval_report.json")),
+    track: bool = typer.Option(False, help=TRACK_HELP),
 ) -> None:
     """Run the agent eval suite on the frozen fixture (calls Claude once per case)."""
     if check_only:
@@ -404,8 +479,16 @@ def evaluate_agent(
         typer.echo(f"  {'PASS' if g['passed'] else 'FAIL'}  {g['id']:<32}"
                    f"{len(g['tool_calls']):>3} tools  {', '.join(failed)}")
 
-    report = _claude(lambda: pipeline.evaluate_agent(load_settings(), eval_dir, effort, case,
-                                                     on_case=progress))
+    def run() -> dict:
+        llm_judge = None
+        if judge:
+            from supplygraph.agent.judge import ClaudeJudge
+
+            llm_judge = ClaudeJudge(effort=effort)
+        return pipeline.evaluate_agent(load_settings(), eval_dir, effort, case,
+                                       on_case=progress, judge=llm_judge)
+
+    report = _claude(run)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2, ensure_ascii=False, default=str),
                    encoding="utf-8")
@@ -417,7 +500,42 @@ def evaluate_agent(
                f"unrequested-action cases {s['unrequested_action_cases']}")
     for cat, m in s["by_category"].items():
         typer.echo(f"  {cat:<18}{m['cases']:>3} cases  pass {m['pass_rate']}")
+    if "judge" in s:
+        j = s["judge"]
+        typer.echo(f"judge {j['model']}: supported {j['supported_rate']}  answers question "
+                   f"{j['answers_question_rate']}  mean score {j['mean_score']}  failed "
+                   f"{j['judge_failed']}  agreement with rules {j['agreement_with_rules']} "
+                   f"(kappa {j['cohen_kappa']})")
+        for cid in j["rules_pass_judge_fail"]:
+            typer.echo(f"  rules pass, judge fails: {cid}")
     typer.echo(f"tokens: {s['tokens']}\nFull report (answers, failed checks) -> {out}")
+    if track:
+        from supplygraph import prompts
+
+        _track("agent", report, {
+            "model": report["model"], "effort": report["effort"], "cases": s["cases"],
+            "judge_model": s["judge"]["model"] if "judge" in s else None,
+            **{f"prompt.{k}": v for k, v in prompts.versions().items()
+               if k.startswith("agent.")}})
+
+
+@app.command()
+def prompts(
+    update: bool = typer.Option(False, help="Rewrite prompts.lock.json from the code."),
+) -> None:
+    """List LLM prompt versions and check them against prompts.lock.json."""
+    from supplygraph import prompts as registry
+
+    current = registry.registry()
+    if update:
+        registry.write_lock(current)
+    problems = registry.lock_problems(current, registry.read_lock())
+    for name, p in sorted(current.items()):
+        typer.echo(f"{name:<20}{p.version:<6}{p.fingerprint}")
+    for problem in problems:
+        typer.echo(f"PROBLEM: {problem}", err=True)
+    if problems:
+        raise typer.Exit(code=1)
 
 
 @app.command()

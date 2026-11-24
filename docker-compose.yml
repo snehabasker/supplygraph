@@ -16,5 +16,24 @@ services:
       timeout: 5s
       retries: 12
 
+  # Optional: vector candidate generation for entity resolution (`evaluate-er --vectors`).
+  pgvector:
+    image: pgvector/pgvector:0.8.1-pg17
+    container_name: supplygraph-pgvector
+    ports:
+      - "127.0.0.1:5433:5432"
+    environment:
+      POSTGRES_USER: supplygraph
+      POSTGRES_PASSWORD: ${PGVECTOR_PASSWORD:-change-me-please}
+      POSTGRES_DB: supplygraph
+    volumes:
+      - pgvector-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U supplygraph -d supplygraph"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
 volumes:
   neo4j-data:
+  pgvector-data:

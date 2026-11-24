@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from rapidfuzz import fuzz
 
 from supplygraph.er.normalize import normalize
+from supplygraph.er.vectors import VectorIndex, embed
 
 COUNTRY_MATCH = "match"
 COUNTRY_MISMATCH = "mismatch"
@@ -35,6 +36,9 @@ class MatcherConfig:
     max_token_frequency: int = 300  # tokens in more records than this are not used for blocking
     country_bonus: float = 0.05
     country_penalty: float = 0.10
+    # Nearest sanctions names (per company name) added as candidates when a vector index is
+    # given (er/vectors.py); 0 = token blocking only.
+    vector_k: int = 0
 
 
 @dataclass(frozen=True)
@@ -103,7 +107,8 @@ def country_relation(a: frozenset[str], b: frozenset[str]) -> str:
 
 
 class Matcher:
-    def __init__(self, right: Iterable[Party], cfg: MatcherConfig | None = None) -> None:
+    def __init__(self, right: Iterable[Party], cfg: MatcherConfig | None = None,
+                 vector_index: VectorIndex | None = None) -> None:
         self.cfg = cfg or MatcherConfig()
         self._right = [_prepare(p, self.cfg) for p in right]
         self._right = [p for p in self._right if p.names]
@@ -115,12 +120,18 @@ class Matcher:
         self._index = {
             tok: ids for tok, ids in index.items() if len(ids) <= self.cfg.max_token_frequency
         }
+        self._vectors = vector_index if self.cfg.vector_k > 0 else None
+        if self._vectors is not None:
+            self._vectors.build([(i, embed(name)) for i, prepared in enumerate(self._right)
+                                 for name in prepared.names])
 
     def _block(self, left: _Normalized) -> set[int]:
         hits: set[int] = set()
         for name in left.names:
             for tok in name.split():
                 hits |= self._index.get(tok, set())
+        if self._vectors is not None and left.names:
+            hits |= self._vectors.search([embed(n) for n in left.names], self.cfg.vector_k)
         return hits
 
     def candidates(self, party: Party, min_score: float = 0.0) -> list[Candidate]:
