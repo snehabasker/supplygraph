@@ -121,9 +121,12 @@ class Matcher:
             tok: ids for tok, ids in index.items() if len(ids) <= self.cfg.max_token_frequency
         }
         self._vectors = vector_index if self.cfg.vector_k > 0 else None
+        self.indexed_names = 0  # vector rows (one per normalized name) given to the index
         if self._vectors is not None:
-            self._vectors.build([(i, embed(name)) for i, prepared in enumerate(self._right)
-                                 for name in prepared.names])
+            rows = [(i, embed(name)) for i, prepared in enumerate(self._right)
+                    for name in prepared.names]
+            self._vectors.build(rows)
+            self.indexed_names = len(rows)
 
     def _block(self, left: _Normalized) -> set[int]:
         hits: set[int] = set()

@@ -8,7 +8,11 @@
 - Dagster: `dagster definitions validate -m supplygraph.orchestration.definitions`; `dagster dev` for the UI
 - Explorer UI: `cd web; npm test; npm run build` (typecheck + build), then `supplygraph serve`;
   API tests in `tests/test_api.py` run on the committed agent-eval fixture
-- Pipeline logic lives in `pipeline.py`; CLI and Dagster assets are thin wrappers — never duplicate logic.
+- Background jobs: `docker compose up -d --wait redis`; `supplygraph worker`; `supplygraph enqueue <resolve|index-vectors> [--wait]`;
+  `supplygraph job <id>`. The Redis round-trip test needs `$env:SUPPLYGRAPH_INTEGRATION="1"`.
+- Pipeline logic lives in `pipeline.py`; CLI, Dagster assets and Celery tasks are thin wrappers — never duplicate logic.
+- Celery tasks must stay idempotent (late acks redeliver them). Anything that writes the warehouse goes on the
+  `warehouse` queue (concurrency 1); only transient errors (lock, connection) are retried.
 - Eval tracking: add `--track` to any `evaluate-*` (MLflow; `MLFLOW_TRACKING_URI`, default
   `sqlite:///data/mlflow.db`). pgvector: `docker compose up -d --wait pgvector`, `PGVECTOR_DSN`.
 - Prompts: changing any LLM prompt, tool description or output schema means bumping that

@@ -20,3 +20,4 @@ edited to reverse a decision; a new record supersedes it.
 | [0012](0012-observability-freshness-first.md) | Observability: data freshness first, then traffic | Accepted |
 | [0013](0013-eval-tracking-prompt-versions-llm-judge.md) | Eval runs tracked in MLflow; prompts versioned and locked; LLM judge advisory | Accepted |
 | [0014](0014-pgvector-candidate-generation-opt-in.md) | pgvector candidate generation: measured, kept opt-in | Accepted |
+| [0015](0015-celery-background-jobs.md) | Celery + Redis for on-demand background jobs; Dagster stays the scheduler | Accepted |

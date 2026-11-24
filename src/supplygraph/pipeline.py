@@ -154,6 +154,32 @@ def evaluate_entities(settings: Settings, eval_dir: Path, use_llm: bool = False,
         return evaluate(con, eval_dir, adjudicator=adjudicator, vector_index=vector_index)
 
 
+def index_er_vectors(settings: Settings) -> dict[str, int]:
+    """Embed the warehouse's sanctions names into the pgvector index (er/vectors.py).
+
+    Same records, normalization and embedding as `evaluate-er --vectors`, so an index built
+    here is reused there (fingerprint match) instead of rebuilt. Idempotent: unchanged
+    sanctions data -> no rebuild (`rebuilt` = 0).
+    """
+    from dataclasses import replace
+
+    from supplygraph.er.evaluate import DEFAULT_VECTOR_K
+    from supplygraph.er.matcher import Matcher, MatcherConfig
+    from supplygraph.er.resolve import load_sanction_parties
+    from supplygraph.er.vectors import PgVectorIndex
+
+    if not settings.pgvector_dsn:
+        raise ValueError("indexing needs PGVECTOR_DSN (see .env.example)")
+    with (
+        PgVectorIndex(settings.pgvector_dsn) as index,
+        _read_only(settings) as con,
+    ):
+        sanctions = load_sanction_parties(con)
+        matcher = Matcher(sanctions, replace(MatcherConfig(), vector_k=DEFAULT_VECTOR_K), index)
+        return {"sanction_records": len(sanctions), "indexed_names": matcher.indexed_names,
+                "rebuilt": int(index.rebuilt)}
+
+
 def score_risk(settings: Settings) -> dict[str, int]:
     from supplygraph.risk import engine
 

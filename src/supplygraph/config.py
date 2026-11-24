@@ -30,6 +30,9 @@ class Settings:
     actions_log_path: Path | None = None
     # PostgreSQL + pgvector, for vector candidate generation in entity resolution (optional).
     pgvector_dsn: str | None = None
+    # Celery background jobs (supplygraph/worker.py): Redis as broker and result backend.
+    celery_broker_url: str = "redis://localhost:6379/0"
+    celery_result_backend: str | None = None  # None = same as the broker
 
     @property
     def raw_dir(self) -> Path:
@@ -81,4 +84,6 @@ def load_settings() -> Settings:
         sec_user_agent=os.getenv("SEC_USER_AGENT") or None,
         actions_log_path=Path(p) if (p := os.getenv("SUPPLYGRAPH_ACTIONS_LOG")) else None,
         pgvector_dsn=os.getenv("PGVECTOR_DSN") or None,
+        celery_broker_url=os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0"),
+        celery_result_backend=os.getenv("CELERY_RESULT_BACKEND") or None,
     )
