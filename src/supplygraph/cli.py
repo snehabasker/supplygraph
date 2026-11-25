@@ -353,12 +353,14 @@ def ask(
     question: str = typer.Argument(..., help="A question about the supplier-risk graph."),
     read_only: bool = typer.Option(False, "--read-only", help="Don't offer action tools."),
     effort: str = typer.Option("medium", help="Claude effort: low, medium, high, xhigh."),
+    use_graph: bool = typer.Option(False, "--graph",
+                                   help="Add the multi-hop Cypher tools (Neo4j must be up)."),
 ) -> None:
     """Ask the graph agent (Claude + read-only graph tools). Answers cite graph refs;
     any action it takes is only a proposal awaiting `supplygraph actions approve`."""
     settings = load_settings()
     result = _claude(lambda: pipeline.ask(settings, question, allow_actions=not read_only,
-                                          effort=effort))
+                                          effort=effort, use_graph=use_graph))
     if result.error:
         typer.echo(f"ERROR: {result.error}", err=True)
     typer.echo(result.answer or "(no answer)")
@@ -591,6 +593,56 @@ def check() -> None:
     if quality.has_blocking_failures(results):
         typer.echo("Blocking data quality failures; refusing to continue.", err=True)
         raise typer.Exit(code=1)
+
+
+@app.command("build-graph-bench")
+def build_graph_bench(eval_dir: Path = typer.Option(DEFAULT_EVAL_DIR)) -> None:
+    """Generate the multi-hop benchmark questions (gold computed from the warehouse)."""
+    counts = pipeline.build_graph_bench(load_settings(), eval_dir)
+    typer.echo(f"Questions -> {eval_dir / 'graph_bench' / 'questions.jsonl'}: {counts}")
+
+
+@app.command("evaluate-graph-bench")
+def evaluate_graph_bench(
+    eval_dir: Path = typer.Option(DEFAULT_EVAL_DIR),
+    k: int = typer.Option(10, min=1, help="Chunks retrieved by vector RAG."),
+    radius: int = typer.Option(2, min=1, max=3, help="GraphRAG neighbourhood radius."),
+    track: bool = typer.Option(False, "--track", help=TRACK_HELP),
+) -> None:
+    """Multi-hop retrieval benchmark: vector RAG vs GraphRAG vs Cypher tools (Neo4j up)."""
+    try:
+        report = pipeline.evaluate_graph_bench(load_settings(), eval_dir, k=k, radius=radius)
+    except ValueError as exc:
+        typer.echo(f"ERROR: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    from supplygraph.graph_bench import METHODS
+
+    def fmt(x: float | None) -> str:
+        return "-" if x is None else f"{x:.3f}"
+
+    for label, s in [("all", report["summary"]), ("multi-hop", report["multi_hop"]),
+                     *report["by_family"].items()]:
+        typer.echo(f"\n{label} ({s['questions']} questions, {s['negatives']} with no answer)")
+        typer.echo(f"  {'method':<14}{'recall':>8}{'precision':>11}{'exact':>8}"
+                   f"{'false-alarm':>13}{'tokens':>9}{'ms':>8}")
+        for m in METHODS:
+            if m in s:
+                v = s[m]
+                typer.echo(f"  {m:<14}{fmt(v['recall']):>8}{fmt(v['precision']):>11}"
+                           f"{fmt(v['exact']):>8}{fmt(v['false_alarm']):>13}"
+                           f"{v['tokens_median']:>9}{v['ms_median']:>8.1f}")
+    if track:
+        _track("graph_bench", report, report["params"])
+
+
+@app.command("mcp")
+def mcp(
+    use_graph: bool = typer.Option(False, "--graph",
+                                   help="Add the multi-hop Cypher tools (Neo4j must be up)."),
+) -> None:
+    """Serve the read-only graph tools as an MCP server over stdio (for Claude Code, Claude
+    Desktop or any MCP client). Logs go to stderr; stdout carries the protocol."""
+    pipeline.serve_mcp(load_settings(), use_graph=use_graph)
 
 
 @app.command("load-graph")

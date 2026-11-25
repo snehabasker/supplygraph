@@ -34,7 +34,22 @@ traversal behind nine tools. Every returned object carries a `ref`.
 
 The tools read the warehouse (DuckDB), not Neo4j. The warehouse is the graph's source of truth:
 Neo4j mirrors it on `load-graph`. That keeps the agent usable and testable without a database
-server. The tools also enforce the graph's semantics in their output, which the system prompt
+server.
+
+**Multi-hop path tools (M12, [ADR 0016](adr/0016-agent-path-tools-on-neo4j-and-mcp.md)).**
+With `ask --graph`, three more tools run fixed, parameterised Cypher against Neo4j. They use
+the risk engine's propagation rules, run in READ transactions with a server-side timeout, and
+take a depth from 1 to 4. The model never writes Cypher.
+
+| Tool | Cypher | Returns |
+|---|---|---|
+| `supplier_tree` | `(s)-[:SUPPLIES\|POSSIBLE_SUPPLIER*1..d]->(root)` | every supplier up to tier d, shortest path, filing refs, `certainty` = weakest link (a path through a lead is a lead) |
+| `sanctions_exposure` | quantified path pattern: ownership either way, supply only forward, checked per hop | sanctions records within d hops, finding vs candidate, and the path |
+| `disruption_reach` | `(root)-[:SUPPLIES\|POSSIBLE_SUPPLIER\|OWNED_BY*1..d]->(x)` | who a disruption reaches (customers and parents, never subsidiaries) |
+
+The same tools, plus the nine above, are served to any MCP client by `supplygraph mcp
+[--graph]`. [graph-bench.md](graph-bench.md) measures them against vector RAG and
+neighbourhood GraphRAG. The tools also enforce the graph's semantics in their output, which the system prompt
 repeats:
 - `POSSIBLE_SUPPLIER` is a ~0.56-precision lead.
 - Review candidates are not findings.

@@ -126,11 +126,15 @@ TOOL_SPECS: list[dict] = [
 
 
 class GraphTools:
+    """The read-only tools: warehouse tools always; multi-hop Cypher tools (`cypher.py`) when a
+    Neo4j-backed `CypherTools` is passed. Agent, UI and MCP server all go through this class."""
+
     def __init__(self, con: duckdb.DuckDBPyConnection, now: datetime | None = None,
-                 store: ActionStore | None = None) -> None:
+                 store: ActionStore | None = None, cypher: Any | None = None) -> None:
         self.con = con
         self.now = now
         self.store = store  # live action state; else the `analyst_actions` table
+        self.cypher = cypher
         self._names: dict[str, str] | None = None
         self.handlers: dict[str, Callable[..., dict]] = {
             "search_companies": self.search_companies, "get_company": self.get_company,
@@ -139,6 +143,17 @@ class GraphTools:
             "review_queue": self.review_queue, "find_connection": self.find_connection,
             "run_scenario": self.run_scenario,
         }
+        if cypher is not None:
+            self.handlers |= cypher.handlers
+
+    @property
+    def specs(self) -> list[dict]:
+        """Tool specs for exactly the tools this instance can run."""
+        if self.cypher is None:
+            return list(TOOL_SPECS)
+        from supplygraph.agent.cypher import CYPHER_TOOL_SPECS
+
+        return TOOL_SPECS + CYPHER_TOOL_SPECS
 
     # --- dispatch ---------------------------------------------------------------------
 

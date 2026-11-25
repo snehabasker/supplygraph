@@ -12,8 +12,9 @@ human-approved, audited action.
 ## Architecture
 
 ```
-GLEIF API ─────┐                                     ┌─► Neo4j knowledge graph ─► GraphRAG agent ─► audited actions
-OpenSanctions ─┤                                     │                         └─► Explorer UI (`serve`)
+GLEIF API ─────┐                                     ┌─► Neo4j knowledge graph ─► agent tools (Cypher paths) ─┬─► Claude agent ─► audited actions
+OpenSanctions ─┤                                     │                         │                              └─► MCP server (any agent)
+               │                                     │                         └─► Explorer UI (`serve`)
 SEC EDGAR ─► supplier extraction ─┼─► raw JSONL/CSV ─► DuckDB ─► DQ checks ─┤
    (10-K/20-F)  (rules | Claude)  │     (bronze)       (silver)              └─► Graph ML risk scores (M5)
 GDELT GKG ─────┘
@@ -227,6 +228,34 @@ On the live data, approving that dismissal removes the spurious possible-sanctio
 the whole ASML group (companies at risk: 24 → 7). Design, safety properties and the eval
 suite are in [docs/agent.md](docs/agent.md).
 
+### Multi-hop Cypher tools and an MCP server
+
+With `--graph`, the agent also gets three path tools that run fixed, parameterised Cypher on
+Neo4j: `supplier_tree`, `sanctions_exposure` and `disruption_reach`. They use variable-length
+and quantified path patterns that apply the risk engine's direction rules. Queries run in
+READ transactions with a server-side timeout, and the model never writes Cypher. The same
+tools are served to any MCP client (Claude Code, Claude Desktop, agent frameworks):
+
+```powershell
+supplygraph ask --graph "Which of NVIDIA's suppliers, two tiers deep, are only leads?"
+supplygraph mcp --graph          # stdio MCP server; read-only, no action tools
+claude mcp add supplygraph -- supplygraph mcp --graph
+```
+
+**Benchmark** (63 multi-hop questions on the live graph, gold computed independently from the
+warehouse; retrieval stage, no LLM; [docs/graph-bench.md](docs/graph-bench.md)):
+
+| Method | Recall | Precision | False alarms on 16 hard negatives | Context tokens |
+|---|---|---|---|---|
+| Vector RAG (TF-IDF, k=10) | 0.71 | 0.17 | 16/16 | 418 |
+| GraphRAG neighbourhood, r=2 / r=3 | 0.76 / 1.00 | 0.32 / 0.38 | 0 / 3 | 408 / 982 |
+| Agent Cypher tools (oracle tool choice) | 1.00 | 1.00 | 0 | 186 |
+
+Vector retrieval finds only 30% of tier-2 suppliers. A fixed-radius neighbourhood either
+misses exposure 2 hops away or flags companies that sanctions risk doesn't reach. The tools'
+perfect score is partly by construction (same rules as the gold, oracle routing). The
+end-to-end LLM score is pending API credit.
+
 ## Explorer UI
 
 A React + Cytoscape front end over a small read-only API (FastAPI, reusing the agent's graph
@@ -316,6 +345,7 @@ Neo4j service container on every push and PR.
 
 - [x] **M10 — Eval ops:** MLflow tracking for every evaluation, versioned and locked prompts, LLM-as-judge for agent answers (advisory, agreement with rules reported), pgvector candidate generation for ER (measured: no gain, root-caused; opt-in)
 - [x] **M11 — Background jobs:** a Celery + Redis worker for entity resolution and pgvector embedding, with a single writer for the warehouse, late acks and retries on lock conflicts (verified on real data)
+- [x] **M12 — Graph tools for agents:** multi-hop Cypher path tools (read-only, bounded), the tool set served as an MCP server, and a 63-question multi-hop benchmark comparing vector RAG, GraphRAG and Cypher tools (retrieval stage; end-to-end LLM run pending API credit)
 
 ## Data & licensing
 

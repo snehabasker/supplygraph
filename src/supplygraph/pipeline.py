@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -261,17 +262,86 @@ def _read_only(settings: Settings):
     return duckdb.connect(str(settings.warehouse_path), read_only=True)
 
 
+@contextmanager
+def graph_reader(settings: Settings):
+    """`CypherTools` over Neo4j for the agent / MCP path tools (read sessions, timeout)."""
+    from neo4j import GraphDatabase
+
+    from supplygraph.agent.cypher import CypherTools
+
+    driver = GraphDatabase.driver(settings.neo4j_uri, auth=settings.neo4j_read_auth)
+    try:
+        driver.verify_connectivity()
+        yield CypherTools(driver, timeout=settings.neo4j_query_timeout)
+    finally:
+        driver.close()
+
+
 def ask(settings: Settings, question: str, allow_actions: bool = True,
-        effort: str = "medium", client=None):
-    """One agent session against the warehouse. Proposals go to the action log, unapplied."""
+        effort: str = "medium", client=None, use_graph: bool = False):
+    """One agent session against the warehouse (plus the Neo4j path tools with `use_graph`).
+    Proposals go to the action log, unapplied."""
     from supplygraph.agent.actions import ActionStore
     from supplygraph.agent.agent import Agent
 
     store = ActionStore(settings.actions_log) if allow_actions else None
-    with _read_only(settings) as con:
+    with ExitStack() as stack:
+        con = stack.enter_context(_read_only(settings))
+        cypher = stack.enter_context(graph_reader(settings)) if use_graph else None
         agent = Agent(con, store=store, client=client, effort=effort,
-                      sessions_dir=settings.agent_sessions_dir)
+                      sessions_dir=settings.agent_sessions_dir, cypher=cypher)
         return agent.ask(question)
+
+
+def serve_mcp(settings: Settings, use_graph: bool = False) -> None:
+    """Serve the read-only graph tools over MCP (stdio) until the client disconnects."""
+    import anyio
+
+    from supplygraph import __version__, mcp_server
+    from supplygraph.agent.tools import GraphTools
+
+    with ExitStack() as stack:
+        con = stack.enter_context(_read_only(settings))
+        cypher = stack.enter_context(graph_reader(settings)) if use_graph else None
+        server = mcp_server.build_server(GraphTools(con, cypher=cypher), version=__version__)
+        anyio.run(mcp_server.run_stdio, server)
+
+
+GRAPH_BENCH_SEEDS = (Path("seeds/companies.csv"), Path("seeds/sec_filers.csv"))
+
+
+def build_graph_bench(settings: Settings, eval_dir: Path) -> dict[str, int]:
+    """Generate the multi-hop question set with gold answers from the warehouse."""
+    from supplygraph import graph_bench
+
+    with _read_only(settings) as con:
+        questions = graph_bench.build_questions(
+            con, graph_bench.display_names(con, GRAPH_BENCH_SEEDS))
+    graph_bench.write_questions(questions, eval_dir / "graph_bench" / "questions.jsonl")
+    counts: dict[str, int] = {}
+    for q in questions:
+        counts[q["family"]] = counts.get(q["family"], 0) + 1
+    return counts
+
+
+def evaluate_graph_bench(settings: Settings, eval_dir: Path, k: int = 10,
+                         radius: int = 2) -> dict:
+    """Vector RAG vs GraphRAG vs Cypher tools on the committed questions (Neo4j must be up and
+    loaded from the same warehouse). Refuses to run on stale gold."""
+    from supplygraph import graph_bench
+
+    questions = graph_bench.read_questions(eval_dir / "graph_bench" / "questions.jsonl")
+    with ExitStack() as stack:
+        con = stack.enter_context(_read_only(settings))
+        stale = graph_bench.stale_gold(questions, con)
+        if stale:
+            raise ValueError(f"{len(stale)} questions have gold that no longer matches the "
+                             f"warehouse (e.g. {stale[0]}); run build-graph-bench and review")
+        cypher = stack.enter_context(graph_reader(settings))
+        report = graph_bench.evaluate(questions, con, cypher, k=k, radius=radius)
+    out = settings.data_dir / "graph_bench_report.json"
+    out.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+    return report
 
 
 def list_actions(settings: Settings, status: str | None = None) -> list:
