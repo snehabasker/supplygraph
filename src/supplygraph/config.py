@@ -33,6 +33,17 @@ class Settings:
     # Celery background jobs (supplygraph/worker.py): Redis as broker and result backend.
     celery_broker_url: str = "redis://localhost:6379/0"
     celery_result_backend: str | None = None  # None = same as the broker
+    # Agent / MCP graph tools (agent/cypher.py). A reader-role account where the edition has
+    # RBAC (Enterprise / Aura); unset falls back to the loader account, still in READ sessions.
+    neo4j_read_user: str | None = None
+    neo4j_read_password: str | None = None
+    neo4j_query_timeout: float = 5.0
+
+    @property
+    def neo4j_read_auth(self) -> tuple[str, str]:
+        if self.neo4j_read_user:
+            return self.neo4j_read_user, self.neo4j_read_password or ""
+        return self.neo4j_user, self.neo4j_password
 
     @property
     def raw_dir(self) -> Path:
@@ -86,4 +97,7 @@ def load_settings() -> Settings:
         pgvector_dsn=os.getenv("PGVECTOR_DSN") or None,
         celery_broker_url=os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0"),
         celery_result_backend=os.getenv("CELERY_RESULT_BACKEND") or None,
+        neo4j_read_user=os.getenv("NEO4J_READ_USER") or None,
+        neo4j_read_password=os.getenv("NEO4J_READ_PASSWORD") or None,
+        neo4j_query_timeout=float(os.getenv("NEO4J_QUERY_TIMEOUT", "5")),
     )

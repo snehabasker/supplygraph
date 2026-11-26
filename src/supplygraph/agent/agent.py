@@ -33,7 +33,7 @@ from supplygraph.agent.actions import (
     ActionError,
     ActionStore,
 )
-from supplygraph.agent.tools import TOOL_SPECS, GraphTools, ToolError, collect_refs
+from supplygraph.agent.tools import GraphTools, ToolError, collect_refs
 
 log = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ FALLBACK_BETA = "server-side-fallback-2026-07-01"
 INSUFFICIENT = "INSUFFICIENT DATA"
 MAX_RESULT_CHARS = 20_000
 # Bump when the system prompt or a tool description changes (checked against prompts.lock.json).
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2"  # v2: multi-hop Cypher tools (M12)
 
 SYSTEM_PROMPT = f"""\
 You are SupplyGraph's supplier-risk analyst assistant. You answer questions about companies, \
@@ -68,6 +68,10 @@ SANCTIONED_AS matches are findings; give their match method.
 - A news mention is a signal, not proof the company was affected; GDELT event tags are loose.
 - Risk scores are relative indicators in [0, 1]; explain them by their drivers (signal, source \
 and link path).
+- Multi-hop questions (supplier tiers, exposure to sanctioned entities, who a disruption \
+reaches): use supplier_tree, sanctions_exposure or disruption_reach when offered, rather than \
+chaining one-hop calls. Give the path, cite every company on it, and say when a hop is only a \
+lead; a path through a lead is a lead.
 
 Actions
 - You can propose four actions: flag a supplier, request an analyst review, confirm a \
@@ -197,9 +201,11 @@ class Agent:
         now: datetime | None = None,
         sessions_dir: Path | None = None,
         actor: str | None = None,
+        cypher: Any | None = None,
     ) -> None:
         self.con = con
-        self.tools = GraphTools(con, now=now, store=store)
+        # cypher: a `CypherTools` over Neo4j adds the multi-hop path tools (docs/adr/0016).
+        self.tools = GraphTools(con, now=now, store=store, cypher=cypher)
         self.store = store  # None: read-only session, no action tools offered
         self.model = model or os.getenv("SUPPLYGRAPH_LLM_MODEL", DEFAULT_MODEL)
         self.effort = effort
@@ -212,7 +218,7 @@ class Agent:
             # Credentials: ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or an `ant auth` profile.
             client = anthropic.Anthropic()
         self.client = client
-        self.tool_specs = TOOL_SPECS + (ACTION_SPECS if store is not None else [])
+        self.tool_specs = self.tools.specs + (ACTION_SPECS if store is not None else [])
 
     # --- tool execution -------------------------------------------------------------
 

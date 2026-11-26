@@ -7,7 +7,7 @@ edited to reverse a decision; a new record supersedes it.
 | # | Decision | Status |
 |---|---|---|
 | [0001](0001-record-architecture-decisions.md) | Record architecture decisions | Accepted |
-| [0002](0002-duckdb-warehouse-neo4j-mirror.md) | DuckDB is the source of truth; Neo4j mirrors it | Accepted |
+| [0002](0002-duckdb-warehouse-neo4j-mirror.md) | DuckDB is the source of truth; Neo4j mirrors it | Partly superseded by 0016 |
 | [0003](0003-ontology-link-types-encode-certainty.md) | The ontology is the contract; link types encode certainty | Accepted |
 | [0004](0004-idempotent-pipeline-one-implementation.md) | Idempotent full-refresh steps, one implementation, blocking quality gates | Accepted |
 | [0005](0005-entity-resolution-identifiers-first.md) | Entity resolution: identifiers first, dev-tuned thresholds, LLM only for the review band | Accepted |
@@ -21,3 +21,4 @@ edited to reverse a decision; a new record supersedes it.
 | [0013](0013-eval-tracking-prompt-versions-llm-judge.md) | Eval runs tracked in MLflow; prompts versioned and locked; LLM judge advisory | Accepted |
 | [0014](0014-pgvector-candidate-generation-opt-in.md) | pgvector candidate generation: measured, kept opt-in | Accepted |
 | [0015](0015-celery-background-jobs.md) | Celery + Redis for on-demand background jobs; Dagster stays the scheduler | Accepted |
+| [0016](0016-agent-path-tools-on-neo4j-and-mcp.md) | Multi-hop agent tools query Neo4j with Cypher; the tools are also served over MCP | Accepted |

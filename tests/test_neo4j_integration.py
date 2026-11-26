@@ -173,3 +173,67 @@ def test_approved_analyst_actions_load_and_reset(driver, tmp_path, con) -> None:
     build_actions_table(con, tmp_path / "empty.jsonl")
     graph.load_graph(con, driver)
     assert props(CHILD) == (None, False)
+
+
+def test_cypher_tools_agree_with_the_warehouse_gold_and_cannot_write(driver, tmp_path) -> None:
+    """The agent's multi-hop Cypher tools return exactly the gold the benchmark computes from
+    the warehouse, and their sessions are read-only on the server side."""
+    import json
+
+    from neo4j import READ_ACCESS
+    from neo4j.exceptions import ClientError
+
+    from conftest import filing_row, mention_row, write_jsonl
+    from supplygraph import graph_bench
+    from supplygraph.agent.cypher import CypherTools
+
+    sanc, sub, cust, sup, t2 = (make_lei(f"TESTSG00000000001{i}") for i in range(5))
+    records = {sanc: make_record(sanc, "Test Sanctioned Refiner", "RU"),
+               sub: make_record(sub, "Test Refiner Subsidiary", "DE"),
+               cust: make_record(cust, "Test Customer Inc.", "US"),
+               sup: make_record(sup, "Test Module Maker", "TW"),
+               t2: make_record(t2, "Test Wafer Works", "TW")}
+    write_raw_data(tmp_path, records, {(sub, sanc, gleif.DIRECT)},
+                   [{"id": "TEST-9", "schema": "Company", "name": "Test Sanctioned Refiner",
+                     "identifiers": sanc, "last_seen": now_iso()}])
+    raw = tmp_path / "raw"
+    (raw / "gleif" / "seeds.json").write_text(json.dumps([cust, sup]))
+    write_jsonl(raw / "sec" / "filings.jsonl", [
+        filing_row(cust, "901", "Test Customer", "0000000000-26-000901"),
+        filing_row(sup, "902", "Test Module Maker", "0000000000-26-000902")])
+    write_jsonl(raw / "sec" / "supplier_mentions.jsonl", [
+        {**mention_row(cust, "901", "Test Sanctioned Refiner", sanc, "LLM"),
+         "accession": "0000000000-26-000901"},
+        {**mention_row(cust, "901", "Test Module Maker", sup, "RULES"),
+         "accession": "0000000000-26-000901"},
+        {**mention_row(sup, "902", "Test Wafer Works", t2, "RULES"),
+         "accession": "0000000000-26-000902"}])
+    con = warehouse.connect(":memory:")
+    warehouse.build_all(con, raw / "gleif", raw / "opensanctions" / "targets.simple.csv",
+                        raw / "sec")
+    graph.load_graph(con, driver)
+
+    tools, g = CypherTools(driver), graph_bench.WarehouseGraph(con)
+    for lei in records:
+        for family, spec in graph_bench.FAMILIES.items():
+            gold, _ = graph_bench.gold_answer(g, family, lei)
+            args = {spec["arg"]: spec["depth"]}
+            out = tools.handlers[spec["tool"]](lei, **args)
+            got = sorted(e["sanction_ref"] for e in out["exposures"]) \
+                if family == "sanctions_exposure" else \
+                sorted(i["ref"] for i in out.get("suppliers", out.get("affected", [])))
+            assert got == gold, (family, records[lei]["attributes"]["entity"]["legalName"])
+    # The interesting cases, spelled out: the customer of the sanctioned refiner is exposed,
+    # its other supplier is not (risk does not flow customer -> supplier), and the wafer
+    # maker is a tier-2 supplier reached only through a lead.
+    assert tools.sanctions_exposure(cust)["exposed"] is True
+    assert tools.sanctions_exposure(sup)["exposed"] is False
+    tier2 = [s for s in tools.supplier_tree(cust)["suppliers"] if s["ref"] == f"lei:{t2}"]
+    assert tier2 and tier2[0]["tier"] == 2 and tier2[0]["certainty"] == "lead"
+
+    with driver.session(default_access_mode=READ_ACCESS) as session, \
+            pytest.raises(ClientError):
+        session.execute_read(lambda tx: tx.run("CREATE (:Company {lei: 'TESTSGWRITE'})")
+                             .consume())
+    assert count(driver, "MATCH (c {lei: 'TESTSGWRITE'}) RETURN count(c)") == 0
+    con.close()

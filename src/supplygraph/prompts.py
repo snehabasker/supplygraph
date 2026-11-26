@@ -38,13 +38,14 @@ def fingerprint(*parts: Any) -> str:
 
 def registry() -> dict[str, Prompt]:
     """All prompts in the codebase. Imported lazily: the LLM modules need `pydantic`."""
-    from supplygraph.agent import agent, judge
+    from supplygraph.agent import agent, cypher, judge, tools
     from supplygraph.er import adjudicate
     from supplygraph.extract import suppliers
 
     entries = [
         Prompt("agent.system", agent.PROMPT_VERSION,
-               fingerprint(agent.SYSTEM_PROMPT, agent.TOOL_SPECS, agent.ACTION_SPECS)),
+               fingerprint(agent.SYSTEM_PROMPT, tools.TOOL_SPECS, agent.ACTION_SPECS,
+                           cypher.CYPHER_TOOL_SPECS)),
         Prompt("agent.judge", judge.PROMPT_VERSION,
                fingerprint(judge.SYSTEM_PROMPT, judge.JudgeVerdict.model_json_schema())),
         Prompt("er.adjudicate", adjudicate.PROMPT_VERSION,

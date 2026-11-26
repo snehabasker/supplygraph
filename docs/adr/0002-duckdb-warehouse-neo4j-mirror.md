@@ -1,6 +1,6 @@
 # 0002. DuckDB is the source of truth; Neo4j mirrors it
 
-**Status:** Accepted (M1; reaffirmed in M6 and M7)
+**Status:** Accepted (M1; reaffirmed in M6 and M7). Partly superseded by [0016](0016-agent-path-tools-on-neo4j-and-mcp.md): the agent's multi-hop tools read Neo4j.
 
 ## Context
 The data arrives as files (GLEIF JSON, a sanctions CSV, SEC filings, GDELT dumps) and must be
